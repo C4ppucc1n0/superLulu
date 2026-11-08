@@ -67,10 +67,6 @@ impl Progress {
         s
     }
 
-    pub fn unlocked(&self, i: usize) -> bool {
-        i == 0 || self.levels.get(i - 1).is_some_and(|l| l.cleared)
-    }
-
     /// Record a finished run. Returns true if it set a new best time.
     pub fn record(&mut self, i: usize, time: f32, golden_mask: u8) -> bool {
         let l = &mut self.levels[i];
@@ -89,13 +85,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn round_trip_and_unlocks() {
+    fn round_trip() {
         let mut p = Progress::default();
-        assert!(p.unlocked(0) && !p.unlocked(1));
         assert!(p.record(0, 95.5, 0b101));
         assert!(!p.record(0, 120.0, 0b010), "slower run is not a best");
         assert_eq!(p.levels[0].goldens, 0b111);
-        assert!(p.unlocked(1) && !p.unlocked(2));
+        assert!(p.levels[0].cleared && !p.levels[1].cleared);
         let q = Progress::parse(&p.to_text());
         assert_eq!(q, p);
         assert_eq!(Progress::parse("garbage\nlevel=9 cleared=1"), Progress::default());

@@ -1698,7 +1698,7 @@ fn draw_card_art(theme: Theme, x: f32, y: f32, w: f32, h: f32, u: f32, t: f32) {
     }
 }
 
-/// Level select: one card per level, locked until the previous one is cleared.
+/// Level select: one card per level, all of them playable from the start.
 pub fn draw_level_select(names: &[(String, Theme)], progress: &Progress, sel: usize, t: f32) {
     set_default_camera();
     let u = ui_scale();
@@ -1708,7 +1708,6 @@ pub fn draw_level_select(names: &[(String, Theme)], progress: &Progress, sel: us
     let (cw, ch, gap) = if names.len() > 3 { (136.0 * u, 190.0 * u, 12.0 * u) } else { (150.0 * u, 190.0 * u, 18.0 * u) };
     let x0 = sw / 2.0 - (n * cw + (n - 1.0) * gap) / 2.0;
     for (i, (name, theme)) in names.iter().enumerate() {
-        let unlocked = progress.unlocked(i);
         let save = &progress.levels[i];
         let chosen = i == sel;
         let lift = if chosen { 6.0 * u + (t * 4.0).sin() * 2.0 * u } else { 0.0 };
@@ -1727,23 +1726,13 @@ pub fn draw_level_select(names: &[(String, Theme)], progress: &Progress, sel: us
         let label = if boss_card { "BOSS".to_string() } else { format!("{}", i + 1) };
         text_center(&label, x + cw / 2.0, ay + ah + 26.0 * u, 24.0 * u, if boss_card { rgb(150, 70, 190) } else { ORANGE_DARK });
         text_center(name, x + cw / 2.0, ay + ah + 46.0 * u, 13.0 * u, INK);
-        if unlocked {
-            if !boss_card {
-                golden_slots(vec2(x + cw / 2.0 - 18.0 * u, ay + ah + 62.0 * u), 6.0 * u, 18.0 * u, |k| save.goldens & (1 << k) != 0);
-            } else if save.cleared {
-                text_center("已击败！", x + cw / 2.0, ay + ah + 66.0 * u, 12.0 * u, rgb(150, 70, 190));
-            }
-            let best = save.best_time.map(|b| format!("最佳 {}", fmt_time(b))).unwrap_or_else(|| "新关卡！".into());
-            text_center(&best, x + cw / 2.0, ay + ah + 84.0 * u, 12.0 * u, rgb(120, 90, 70));
-        } else {
-            rounded_rect(x, y, cw, ch, 10.0 * u, rgba(40, 30, 50, 150));
-            // padlock
-            let c = vec2(x + cw / 2.0, y + 66.0 * u);
-            draw_circle_lines(c.x, c.y - 10.0 * u, 10.0 * u, 4.0 * u, rgb(230, 230, 240));
-            rounded_rect(c.x - 15.0 * u, c.y - 6.0 * u, 30.0 * u, 24.0 * u, 4.0 * u, rgb(255, 214, 90));
-            draw_circle(c.x, c.y + 4.0 * u, 3.5 * u, rgb(150, 100, 40));
-            text_center("先通过上一关", x + cw / 2.0, ay + ah + 84.0 * u, 11.0 * u, rgb(240, 236, 250));
+        if !boss_card {
+            golden_slots(vec2(x + cw / 2.0 - 18.0 * u, ay + ah + 62.0 * u), 6.0 * u, 18.0 * u, |k| save.goldens & (1 << k) != 0);
+        } else if save.cleared {
+            text_center("已击败！", x + cw / 2.0, ay + ah + 66.0 * u, 12.0 * u, rgb(150, 70, 190));
         }
+        let best = save.best_time.map(|b| format!("最佳 {}", fmt_time(b))).unwrap_or_else(|| "新关卡！".into());
+        text_center(&best, x + cw / 2.0, ay + ah + 84.0 * u, 12.0 * u, rgb(120, 90, 70));
     }
     if ((t * 2.0) as i32) % 2 == 0 {
         text_center("A D 选择      Enter 开始      Esc 返回", sw / 2.0, 318.0 * u, 14.0 * u, WHITE);

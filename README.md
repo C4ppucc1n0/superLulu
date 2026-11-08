@@ -1,14 +1,14 @@
 # Super Lulu
 
 一个用 Rust + macroquad 写的横版跳跃小游戏，主角是 Lulu。成品是一个单独的 exe，图片、关卡、音效都编译在 exe 里面。
-一共 4 关：橘子草原 → 饼干工厂 → 天空之城 → 雷云之巅（BOSS 雷雨云大王），通关一关解锁下一关。
+一共 4 关：橘子草原 → 饼干工厂 → 天空之城 → 雷云之巅（BOSS 雷雨云大王），一开始就能在选关画面选任意一关。
 操作：A D 移动，W 跳/滑翔，按住 S 蓄力再按 W 超级跳，Shift 跑，J 领带鞭（三连击），K 屁股墩，L 扔橘子。
 界面文字是中文，用的是 Windows 自带的微软雅黑（找不到时依次退到黑体、等线、macroquad 默认字体）。
 
 ## 发给别人
 
 `dist/SuperLulu.zip` 里有 `SuperLulu.exe` 和 `玩法说明.txt`，直接发这个压缩包就行。
-通关进度（解锁、最佳时间、金橘子）保存在 `%APPDATA%\SuperLulu\progress.txt`，删掉这个文件就是从头开始。
+通关记录（是否通过、最佳时间、金橘子）保存在 `%APPDATA%\SuperLulu\progress.txt`，删掉这个文件就是从头开始。
 
 ## 编译 / 测试
 

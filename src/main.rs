@@ -202,7 +202,8 @@ async fn main() {
                 }
                 if any_pressed(START) && !alt {
                     state = State::Select;
-                    sel = (0..LEVELS.len()).rev().find(|&i| progress.unlocked(i) && !progress.levels[i].cleared).unwrap_or(level);
+                    // start on the first level not beaten yet (every level can be picked)
+                    sel = (0..LEVELS.len()).find(|&i| !progress.levels[i].cleared).unwrap_or(level);
                 }
             }
             State::Select => {
@@ -215,7 +216,7 @@ async fn main() {
                 }
                 if is_key_pressed(KeyCode::Escape) {
                     state = State::Title;
-                } else if any_pressed(START) && !alt && progress.unlocked(sel) {
+                } else if any_pressed(START) && !alt {
                     level = sel;
                     game = new_game(level);
                     state = State::Playing;
