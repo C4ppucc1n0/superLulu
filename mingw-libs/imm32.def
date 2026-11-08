@@ -1,0 +1,14 @@
+LIBRARY imm32.dll
+EXPORTS
+ImmAssociateContext
+ImmAssociateContextEx
+ImmCreateContext
+ImmDestroyContext
+ImmGetCompositionStringW
+ImmGetContext
+ImmGetOpenStatus
+ImmReleaseContext
+ImmSetCandidateWindow
+ImmSetCompositionWindow
+ImmSetOpenStatus
+ImmNotifyIME

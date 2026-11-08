@@ -1,0 +1,95 @@
+; SUPER LULU - level 1
+; Each '---' block is a slice of the level; blocks are joined left-to-right and
+; bottom-aligned, so a block may have fewer rows than the level height (20).
+; Lines starting with ';' are comments.
+; #  ground          X  stone block      =  jump-through platform   C  crumbling block
+; ^  floor spikes    v  ceiling spikes   o  orange (coin)           *  golden orange (3)
+; S  shield bubble   P  player start     K  checkpoint              G  goal gate (bottom-left)
+; e  jelly (stomp)   h  hedgehog (spiky, do NOT stomp)              f  frog (hops at you)
+; <  turret firing left   >  turret firing right
+; H  horizontal moving platform (run of H = one platform)   V  vertical moving platform
+; |  invisible bumper: turns moving platforms and walking enemies around
+--- segment 1 Orange Meadow (columns 0-69)
+                                                                      
+                                                                      
+                                                                      
+                                                                      
+                                                                      
+                                                                      
+                                                                      
+                                                                      
+                                                                      
+                                                                      
+                                               *                      
+                                                                 oooo 
+                             oooo                                     
+                  ooo               ooooS     o o             ###     
+      ooo         XXX               =====      X             ####     
+            ooo          ####                  X            #####     
+   P                  e  ####            f     X     e   e ######     
+############   ##############    ############  X  ###############    #
+############   ##############    ############^^X^^###############    #
+############   ##############    ################################    #
+--- segment 2 Machinery (columns 70-139)
+                                                                      
+                                                                      
+                                                                      
+                                                                      
+                                                                      
+                                                                      
+                                                                      
+                                                                      
+                                                               oo     
+            vvvv                                      vvvvvvv  ||     
+                                                                  ####
+                                                                  ####
+             oo                                                   ####
+             ==                                 ooo  |HHH    |    ####
+         oo      oo                                               ####
+         ==      ==        ooo     ooo     | HHH     |            ####
+                                e                              VV ####
+#######              #####CCCC CCC CCC#####                  #########
+#######^^^^^^^^^^^^^^#####            #####                  #########
+##########################            #####                  #########
+--- segment 3 Critter Gauntlet (columns 140-211)
+                                                                        
+                                                                        
+                                                                        
+                                                                        
+                                                                        
+                                                                        
+                                                                        
+                                                                        
+                                                                        
+K S                                                                     
+####                       o                                            
+####               o   o                                      *         
+####           o           ##                  ###            X         
+####               ##  f   ##                  <##  ooooo               
+#### ooo       ##  ##  ##  ##              ==  ###  =====   ooooo       
+####           ##  ##  ##  ##     ooooooo      ###                      
+####      h    ##  ##  ##  ##       e          <##   h   h           f  
+#############  ##  ##  ##  ##  #############################     #######
+#############  ##  ##  ##  ##  #############################     #######
+#############  ##  ##  ##  ##  #############################     #######
+--- segment 4 The Climb & the Sky Road (columns 212-289)
+                                                                              
+                          vvvvvvvvv                                           
+                                                                              
+X                                                                             
+X*   o  XXXXXXX            o  o  o                                            
+X    CC  vvX               C  C  C                                            
+X o        <   |HH       |                                                    
+X===       X                      |HH    |  h                                 
+X     o    X                              XXXXX                               
+X     CC   X                              XXXXX                               
+X          <                              XXXXX                               
+X  o       X                              XXXXX                               
+X ===      X                              XXXXX    ooooo                      
+X       o  <                              XXXXX      e    oooooo              
+X      === X                              XXXXX   =======                     
+           X                              XXXXX                               
+    S      X                              XXXXX    ^^^^^    f   h  ^^  G      
+############                              XXXXX###############################
+############                              XXXXX###############################
+############                              XXXXX###############################

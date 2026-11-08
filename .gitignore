@@ -1,0 +1,8 @@
+# build output
+/target/
+/dist/
+
+# python venv + scratch files for the asset tools
+/tools/.venv/
+/tools/tmp/
+__pycache__/
