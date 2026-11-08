@@ -1,5 +1,11 @@
 //! Game state and fixed-timestep simulation.
 
+mod boss;
+mod combat;
+
+pub use boss::*;
+pub use combat::*;
+
 use macroquad::color::Color;
 use macroquad::math::{vec2, Rect, Vec2};
 
@@ -22,6 +28,9 @@ const THROW_COOLDOWN: f32 = 0.22;
 const MAX_THROWN: usize = 3;
 pub const THROWN_SIZE: f32 = 12.0;
 const BOX_ORANGES: u32 = 3;
+/// "LuLu can fly!!!" bubble: how long it shows, and the minimum time between two of them.
+pub const BUBBLE_TIME: f32 = 1.6;
+const BUBBLE_COOLDOWN: f32 = 6.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Sfx {
@@ -47,6 +56,20 @@ pub enum Sfx {
     BoxHit,
     BoxEmpty,
     Secret,
+    Whip,
+    WhipHit,
+    Combo,
+    Spin,
+    Pound,
+    Break,
+    Charge,
+    SuperJump,
+    Clink,
+    Zap,
+    Thunder,
+    BossRoar,
+    BossHurt,
+    BossDefeat,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -69,6 +92,8 @@ pub enum EKind {
     Hedgehog,
     Frog,
     Seed,
+    /// Little storm cloud summoned by the boss: floats after you.
+    Cloudlet,
 }
 
 impl EKind {
@@ -81,6 +106,7 @@ impl EKind {
             EKind::Hedgehog => vec2(28.0, 22.0),
             EKind::Frog => vec2(24.0, 20.0),
             EKind::Seed => vec2(14.0, 10.0),
+            EKind::Cloudlet => vec2(28.0, 20.0),
         }
     }
 }
@@ -98,17 +124,35 @@ pub struct Enemy {
     pub active: bool,
     pub timer: f32,
     pub on_ground: bool,
+    /// Knocked out: flying off the screen, spinning.
+    pub ko: bool,
+    pub spin: f32,
+    spin_v: f32,
 }
 
 impl Enemy {
     fn new(kind: EKind, pos: Vec2) -> Self {
-        Enemy { kind, pos, vel: Vec2::ZERO, size: kind.size(), dir: -1.0, alive: true, dying: 0.0, active: false, timer: 0.0, on_ground: false }
+        Enemy {
+            kind,
+            pos,
+            vel: Vec2::ZERO,
+            size: kind.size(),
+            dir: -1.0,
+            alive: true,
+            dying: 0.0,
+            active: false,
+            timer: 0.0,
+            on_ground: false,
+            ko: false,
+            spin: 0.0,
+            spin_v: 0.0,
+        }
     }
     pub fn rect(&self) -> Rect {
         Rect::new(self.pos.x, self.pos.y, self.size.x, self.size.y)
     }
     fn hittable(&self) -> bool {
-        self.alive && self.dying <= 0.0 && self.active
+        self.alive && self.dying <= 0.0 && self.active && !self.ko
     }
 }
 
@@ -197,12 +241,15 @@ pub struct Anim {
     pub prop: f32,
     pub prop_speed: f32,
     pub throw_t: f32,
+    /// Somersault while winding up a ground pound.
+    pub spin: f32,
 }
 
 /// Read-only view of the world used for collision during a step.
 pub struct WorldView<'a> {
     lv: &'a Level,
     crumbles: &'a [Crumble],
+    cracked: &'a [bool],
     plats: &'a [Rect],
 }
 
@@ -214,6 +261,9 @@ impl Collider for WorldView<'_> {
             if let Crumble::Gone(_) = self.crumbles[i] {
                 return Coll::Empty;
             }
+        }
+        if t == Tile::Cracked && self.cracked[self.lv.idx(tx, ty).unwrap()] {
+            return Coll::Empty;
         }
         t.coll()
     }
@@ -305,6 +355,30 @@ pub struct Game {
     pub t: f32,
     pub shake: f32,
     rng: u32,
+    pub whip: Option<Whip>,
+    whip_cd: f32,
+    whip_chain: f32,
+    whip_next: u8,
+    whip_queue: bool,
+    /// Freeze-frame after a big hit.
+    pub hitstop: f32,
+    pub combo: u32,
+    combo_t: f32,
+    /// Where the last combo happened and how long ago.
+    pub combo_pop: (Vec2, f32),
+    /// "LuLu can fly!!!" bubble time left.
+    pub bubble_t: f32,
+    bubble_cd: f32,
+    bubble_used: bool,
+    /// Ground pound rings: (centre, age).
+    pub shockwaves: Vec<(Vec2, f32)>,
+    /// Cracked floor tiles that have been pounded open.
+    pub cracked_gone: Vec<bool>,
+    pub boss: Option<Boss>,
+    /// White flash when lightning strikes.
+    pub screen_flash: f32,
+    /// Time since the boss gate opened.
+    pub gate_t: f32,
 }
 
 fn tile_center(tx: i32, ty: i32) -> Vec2 {
@@ -346,6 +420,10 @@ impl Game {
         let n = lv.tiles.len();
         let groups = lv.fake_groups;
         let body = Body::new(start - vec2(PW / 2.0, PH));
+        let boss = lv.boss.then(|| Boss::new(&lv));
+        if boss.is_some() {
+            goal = Rect::new(-1000.0, 0.0, 0.0, 0.0); // the gate opens when the boss is beaten
+        }
         let mut g = Game {
             crumbles: vec![Crumble::Solid; n],
             plats: vec![],
@@ -393,6 +471,23 @@ impl Game {
             t: 0.0,
             shake: 0.0,
             rng: 0x1234_5678,
+            whip: None,
+            whip_cd: 0.0,
+            whip_chain: 0.0,
+            whip_next: 1,
+            whip_queue: false,
+            hitstop: 0.0,
+            combo: 0,
+            combo_t: 0.0,
+            combo_pop: (Vec2::ZERO, 9.0),
+            bubble_t: 0.0,
+            bubble_cd: 0.0,
+            bubble_used: false,
+            shockwaves: vec![],
+            cracked_gone: vec![false; n],
+            boss,
+            screen_flash: 0.0,
+            gate_t: 0.0,
             lv,
         };
         g.reset_world();
@@ -461,6 +556,9 @@ impl Game {
         self.invuln = 0.0;
         self.anim = Anim { scale: vec2(1.3, 0.7), ..Default::default() };
         self.particles.clear();
+        self.whip = None;
+        self.hitstop = 0.0;
+        self.boss_reset_phase();
         self.update_camera(0.0, true);
         self.puff(self.body.center(), 10, Color::new(1.0, 1.0, 1.0, 0.9));
     }
@@ -513,6 +611,10 @@ impl Game {
         let dir = if (c.x - from.x).abs() > 2.0 { (c.x - from.x).signum() } else { -self.body.facing };
         let b = &mut self.body;
         b.vel = vec2(dir * 170.0, -330.0);
+        b.pound = Pound::None;
+        b.crouch = false;
+        b.charge = 0.0;
+        b.super_jumping = false;
         b.jumping = false;
         b.boost = false;
         b.gliding = false;
@@ -557,13 +659,29 @@ impl Game {
     pub fn update(&mut self, inp: &Input, dt: f32) {
         self.t += dt;
         self.shake = (self.shake - dt).max(0.0);
+        self.screen_flash = (self.screen_flash - dt).max(0.0);
         if let Some((_, t)) = &mut self.toast {
             *t -= dt;
             if *t <= 0.0 {
                 self.toast = None;
             }
         }
+        if self.hitstop > 0.0 {
+            self.hitstop -= dt;
+            return;
+        }
         self.update_particles(dt);
+        for s in self.shockwaves.iter_mut() {
+            s.1 += dt;
+        }
+        self.shockwaves.retain(|s| s.1 < 0.4);
+        self.combo_t = (self.combo_t - dt).max(0.0);
+        self.combo_pop.1 += dt;
+        self.bubble_t = (self.bubble_t - dt).max(0.0);
+        self.bubble_cd = (self.bubble_cd - dt).max(0.0);
+        if self.boss.as_ref().is_some_and(|b| b.gone) {
+            self.gate_t += dt;
+        }
         for b in self.box_bumps.iter_mut() {
             b.1 += dt;
         }
@@ -583,7 +701,7 @@ impl Game {
             // walk into the gate
             self.body.vel.x = approach(self.body.vel.x, 0.0, FRICTION * dt);
             let empty = Input::default();
-            let wv = WorldView { lv: &self.lv, crumbles: &self.crumbles, plats: &self.plat_rects };
+            let wv = WorldView { lv: &self.lv, crumbles: &self.crumbles, cracked: &self.cracked_gone, plats: &self.plat_rects };
             step_player(&mut self.body, &empty, dt, &wv);
             if self.clear_t < 2.5 && (self.t * 10.0) as i32 % 2 == 0 {
                 let at = vec2(self.goal.x + self.rand() * self.goal.w, self.goal.y + self.rand() * 40.0);
@@ -613,7 +731,7 @@ impl Game {
         if let Some(i) = self.body.plat {
             if let Some(p) = self.plats.get(i) {
                 let d = p.delta;
-                let wv = WorldView { lv: &self.lv, crumbles: &self.crumbles, plats: &[] };
+                let wv = WorldView { lv: &self.lv, crumbles: &self.crumbles, cracked: &self.cracked_gone, plats: &[] };
                 sweep_x(&mut self.body.pos, vec2(PW, PH), d.x, &wv, false);
                 if d.y < 0.0 {
                     sweep_y(&mut self.body.pos, vec2(PW, PH), d.y, &wv, false, false);
@@ -626,19 +744,46 @@ impl Game {
         // player
         let prev_bottom = self.body.pos.y + PH;
         let ev = {
-            let wv = WorldView { lv: &self.lv, crumbles: &self.crumbles, plats: &self.plat_rects };
+            let wv = WorldView { lv: &self.lv, crumbles: &self.crumbles, cracked: &self.cracked_gone, plats: &self.plat_rects };
             step_player(&mut self.body, inp, dt, &wv)
         };
         let feet = vec2(self.body.pos.x + PW / 2.0, self.body.pos.y + PH);
-        if ev.jumped {
+        if ev.super_jump {
+            self.sfx.push(Sfx::SuperJump);
+            self.anim.scale = vec2(0.66, 1.38);
+            self.dust(feet, 10);
+            self.stars(feet, 8);
+        } else if ev.jumped {
             self.sfx.push(Sfx::Jump);
             self.anim.scale = vec2(0.78, 1.22);
             self.dust(feet, 4);
         }
-        if ev.landed {
+        if ev.charged {
+            self.sfx.push(Sfx::Charge);
+            let c = self.body.center();
+            self.stars(c, 6);
+        }
+        if ev.pound_start {
+            self.sfx.push(Sfx::Spin);
+        }
+        if ev.pound_land {
+            self.pound_land();
+            self.bubble_used = false;
+        } else if ev.landed {
             self.anim.scale = vec2(1.25, 0.8);
             self.sfx.push(Sfx::Land);
             self.dust(feet, 6);
+            self.bubble_used = false;
+        }
+        if self.body.super_jumping && self.rand() < 0.7 {
+            let p = feet + vec2((self.rand() - 0.5) * 14.0, -self.rand() * 10.0);
+            let life = 0.35;
+            self.particles.push(Particle { pos: p, vel: vec2(0.0, 30.0), life, max: life, size: 2.5, color: Color::new(1.0, 0.9, 0.4, 1.0), grav: 0.0 });
+        }
+        if self.body.super_ready() && self.rand() < 0.25 {
+            let c = self.body.center() + vec2((self.rand() - 0.5) * 30.0, (self.rand() - 0.2) * 24.0);
+            let life = 0.4;
+            self.particles.push(Particle { pos: c, vel: vec2(0.0, -50.0), life, max: life, size: 2.2, color: Color::new(1.0, 0.92, 0.45, 1.0), grav: 0.0 });
         }
         if let Some(tile) = ev.sprung {
             self.sfx.push(Sfx::Spring);
@@ -648,6 +793,11 @@ impl Game {
         }
         if ev.glide_start {
             self.sfx.push(Sfx::Glide);
+            if !self.bubble_used && self.bubble_cd <= 0.0 {
+                self.bubble_t = BUBBLE_TIME;
+                self.bubble_cd = BUBBLE_COOLDOWN;
+                self.bubble_used = true;
+            }
         }
         if let Some((tx, ty)) = ev.bump_tile {
             self.hit_box(tx, ty);
@@ -661,11 +811,13 @@ impl Game {
         if inp.throw_pressed {
             self.throw();
         }
+        self.update_whip(inp.whip_pressed, dt);
         self.update_crumbles(dt);
         self.update_enemies(dt);
         self.update_turrets(dt);
         self.update_thrown(dt);
         self.update_items(dt);
+        self.update_boss(dt);
         self.interact(prev_bottom, inp.jump_held);
         self.update_secrets();
 
@@ -686,7 +838,10 @@ impl Game {
         let l = (b.pos.x / TILE).floor() as i32;
         let r = ((b.pos.x + PW - 0.01) / TILE).floor() as i32;
         let firm = |t: Tile| {
-            matches!(t, Tile::Ground | Tile::Stone | Tile::OneWay | Tile::TurretL | Tile::TurretR | Tile::Fan | Tile::BoxOrange | Tile::BoxHeart)
+            matches!(
+                t,
+                Tile::Ground | Tile::Stone | Tile::OneWay | Tile::TurretL | Tile::TurretR | Tile::Fan | Tile::BoxOrange | Tile::BoxHeart | Tile::Pedestal
+            )
         };
         if !firm(self.lv.tile(l, row)) || !firm(self.lv.tile(r, row)) {
             return;
@@ -725,7 +880,7 @@ impl Game {
         }
         if self.oranges == 0 {
             self.sfx.push(Sfx::NoAmmo);
-            self.toast = Some(("NO ORANGES!", 0.9));
+            self.toast = Some(("没有橘子了！", 0.9));
             self.throw_cd = 0.4;
             return;
         }
@@ -864,7 +1019,7 @@ impl Game {
         let bottom = self.lv.h as f32 * TILE + 100.0;
         let mut poofs = vec![];
         {
-            let wv = WorldView { lv: &self.lv, crumbles: &self.crumbles, plats: &[] };
+            let wv = WorldView { lv: &self.lv, crumbles: &self.crumbles, cracked: &self.cracked_gone, plats: &[] };
             for e in self.enemies.iter_mut() {
                 if !e.alive {
                     continue;
@@ -872,6 +1027,16 @@ impl Game {
                 if e.dying > 0.0 {
                     e.dying -= dt;
                     if e.dying <= 0.0 {
+                        e.alive = false;
+                    }
+                    continue;
+                }
+                if e.ko {
+                    e.vel.y += 1400.0 * dt;
+                    e.pos += e.vel * dt;
+                    e.spin += e.spin_v * dt;
+                    e.timer += dt;
+                    if e.timer > 1.6 {
                         e.alive = false;
                     }
                     continue;
@@ -939,6 +1104,22 @@ impl Game {
                             poofs.push(e.pos + e.size / 2.0);
                         }
                     }
+                    EKind::Cloudlet => {
+                        // drift after Lulu, bobbing
+                        let to = pc - (e.pos + e.size / 2.0);
+                        let want = to.normalize_or_zero() * 55.0 + vec2(0.0, (e.timer * 4.0).sin() * 25.0);
+                        e.vel.x = approach(e.vel.x, want.x, 120.0 * dt);
+                        e.vel.y = approach(e.vel.y, want.y, 120.0 * dt);
+                        if to.x.abs() > 4.0 {
+                            e.dir = to.x.signum();
+                        }
+                        e.pos += e.vel * dt;
+                        e.timer += dt;
+                        if e.timer > 9.0 {
+                            e.alive = false;
+                            poofs.push(e.pos + e.size / 2.0);
+                        }
+                    }
                 }
                 if e.pos.y > bottom {
                     e.alive = false;
@@ -981,28 +1162,19 @@ impl Game {
         }
     }
 
-    /// Knock out an enemy with a thrown orange (works on every kind, even hedgehogs).
-    fn pop_enemy(&mut self, i: usize) {
-        let e = &mut self.enemies[i];
-        e.alive = false;
-        let c = e.pos + e.size / 2.0;
-        self.sfx.push(Sfx::Pop);
-        self.puff(c, 10, Color::new(1.0, 1.0, 1.0, 0.95));
-        self.puff(c, 6, Color::new(1.0, 0.8, 0.3, 1.0));
-    }
-
     fn update_thrown(&mut self, dt: f32) {
         let mut list = std::mem::take(&mut self.thrown);
         let size = vec2(THROWN_SIZE, THROWN_SIZE);
         let bottom = self.lv.h as f32 * TILE + 40.0;
         let mut boxes = vec![];
         let mut splats = vec![];
-        let mut pops = vec![];
+        let mut pops: Vec<(usize, f32)> = vec![];
+        let mut boss_hits = vec![];
         for p in list.iter_mut() {
             p.life -= dt;
             p.vel.y = (p.vel.y + 1100.0 * dt).min(600.0);
             p.spin += p.vel.x.signum() * 14.0 * dt;
-            let wv = WorldView { lv: &self.lv, crumbles: &self.crumbles, plats: &self.plat_rects };
+            let wv = WorldView { lv: &self.lv, crumbles: &self.crumbles, cracked: &self.cracked_gone, plats: &self.plat_rects };
             if let Some(t) = sweep_x(&mut p.pos, size, p.vel.x * dt, &wv, false) {
                 boxes.push(t);
                 p.life = 0.0;
@@ -1024,7 +1196,10 @@ impl Game {
             let r = Rect::new(p.pos.x, p.pos.y, THROWN_SIZE, THROWN_SIZE);
             if p.life > 0.0 {
                 if let Some(i) = self.enemies.iter().position(|e| e.hittable() && e.rect().overlaps(&r)) {
-                    pops.push(i);
+                    pops.push((i, p.vel.x.signum()));
+                    p.life = 0.0;
+                } else if self.boss_overlaps(r) {
+                    boss_hits.push(r.center());
                     p.life = 0.0;
                 }
             }
@@ -1037,12 +1212,14 @@ impl Game {
         }
         list.retain(|p| p.life > 0.0);
         self.thrown = list;
-        pops.sort_unstable();
-        pops.dedup();
-        for i in pops.into_iter().rev() {
-            self.pop_enemy(i);
+        pops.sort_unstable_by_key(|p| p.0);
+        pops.dedup_by_key(|p| p.0);
+        for (i, dir) in pops {
+            self.knock_out(i, vec2(dir * 200.0, -320.0));
         }
-        self.enemies.retain(|e| e.alive);
+        for at in boss_hits {
+            self.boss_attacked(at, false);
+        }
         for at in splats {
             self.puff(at, 6, Color::new(1.0, 0.65, 0.2, 1.0));
         }
@@ -1054,7 +1231,7 @@ impl Game {
     /// Items popped out of boxes bounce and settle.
     fn update_items(&mut self, dt: f32) {
         let bottom = self.lv.h as f32 * TILE + 40.0;
-        let wv = WorldView { lv: &self.lv, crumbles: &self.crumbles, plats: &self.plat_rects };
+        let wv = WorldView { lv: &self.lv, crumbles: &self.crumbles, cracked: &self.cracked_gone, plats: &self.plat_rects };
         for it in self.items.iter_mut().filter(|i| i.falling && !i.taken) {
             let r = it.radius();
             let size = vec2(r * 2.0, r * 2.0);
@@ -1084,8 +1261,19 @@ impl Game {
     }
 
     fn interact(&mut self, prev_bottom: f32, jump_held: bool) {
-        // enemies
+        // a ground pound slam knocks out anything in its way (even hedgehogs)
         let pr = self.body.rect();
+        if self.body.pound == Pound::Slam {
+            for i in 0..self.enemies.len() {
+                let e = &self.enemies[i];
+                if e.hittable() && pr.overlaps(&e.rect()) {
+                    let dir = if e.pos.x + e.size.x / 2.0 >= pr.x + pr.w / 2.0 { 1.0 } else { -1.0 };
+                    self.knock_out(i, vec2(dir * 160.0, -360.0));
+                }
+            }
+        }
+        self.boss_contact(prev_bottom, jump_held);
+        // enemies
         let mut stomped = None;
         let mut hurt_by = None;
         for (i, e) in self.enemies.iter().enumerate() {
@@ -1121,6 +1309,7 @@ impl Game {
             self.body.on_ground = false;
             self.sfx.push(Sfx::Stomp);
             self.puff(c, 8, Color::new(1.0, 1.0, 1.0, 0.9));
+            self.count_combo(c);
         } else if let Some(from) = hurt_by {
             self.hurt(from);
         }
@@ -1168,7 +1357,7 @@ impl Game {
                     self.goldens += 1;
                     self.golden_mask |= 1 << id;
                     self.sfx.push(Sfx::Golden);
-                    self.toast = Some(("GOLDEN ORANGE!", 1.6));
+                    self.toast = Some(("金橘子！", 1.6));
                     self.puff(pos, 18, Color::new(1.0, 0.9, 0.3, 1.0));
                 }
                 ItemKind::Shield => {
@@ -1192,7 +1381,7 @@ impl Game {
                 self.respawn = self.checkpoints[i].pos;
                 self.hearts = MAX_HEARTS;
                 self.sfx.push(Sfx::Checkpoint);
-                self.toast = Some(("CHECKPOINT!", 1.6));
+                self.toast = Some(("存档点！", 1.6));
                 let p = self.checkpoints[i].pos - vec2(0.0, 50.0);
                 self.puff(p, 14, Color::new(1.0, 0.65, 0.2, 1.0));
             }
@@ -1223,7 +1412,7 @@ impl Game {
                         if !self.revealed[g] {
                             self.revealed[g] = true;
                             self.sfx.push(Sfx::Secret);
-                            self.toast = Some(("SECRET ROOM!", 1.6));
+                            self.toast = Some(("发现隐藏房间！", 1.6));
                         }
                     }
                     Tile::Sign(n) => self.sign = Some((n, vec2((tx as f32 + 0.5) * TILE, ty as f32 * TILE))),
@@ -1267,14 +1456,27 @@ impl Game {
         let b = &self.body;
         let a = &mut self.anim;
         let k = 1.0 - (-dt * 12.0).exp();
-        a.scale += (Vec2::ONE - a.scale) * k;
+        let rest = if b.crouch {
+            vec2(1.16, 0.78)
+        } else if b.pound == Pound::Slam {
+            vec2(0.8, 1.22)
+        } else {
+            Vec2::ONE
+        };
+        a.scale += (rest - a.scale) * k;
         a.throw_t = (a.throw_t - dt).max(0.0);
+        a.spin = match b.pound {
+            Pound::Windup(t) => (t / POUND_WINDUP).min(1.0) * std::f32::consts::TAU * b.facing,
+            _ => 0.0,
+        };
         let speed = b.vel.x.abs();
         let moving = b.on_ground && speed > 10.0 && b.slope == 0;
         if moving {
             a.run_phase += speed * dt * 0.075;
         }
-        let tilt_target = if b.slope != 0 {
+        let tilt_target = if let Some(w) = &self.whip {
+            w.dir * 0.16 * w.extension()
+        } else if b.slope != 0 {
             b.slope as f32 * 0.5
         } else if moving {
             a.run_phase.sin() * 0.10 + b.vel.x / RUN_MAX * 0.05
@@ -1392,7 +1594,9 @@ mod tests {
         g.update(&Input { throw_pressed: true, ..Default::default() }, DT);
         assert_eq!(g.oranges, 1);
         run(&mut g, 1.0, idle);
-        assert!(g.enemies.is_empty(), "hedgehog knocked out");
+        assert!(g.enemies.iter().all(|e| e.ko), "hedgehog knocked out");
+        run(&mut g, 1.6, idle);
+        assert!(g.enemies.is_empty(), "and gone once it flew off");
         assert_eq!(g.hearts, MAX_HEARTS);
     }
 
@@ -1523,5 +1727,145 @@ mod tests {
         run(&mut g, 0.2, idle);
         run(&mut g, 1.5, |t| Input { jump_pressed: t < DT || (t > 0.2 && t < 0.2 + DT), jump_held: t < 0.15 || t > 0.2, ..Default::default() });
         assert!(g.body.pos.y < start_y - 4.0 * TILE, "rose {} tiles", (start_y - g.body.pos.y) / TILE);
+    }
+
+    #[test]
+    fn whip_knocks_out_a_hedgehog() {
+        let mut g = game(&["  P h     ", "##########"]);
+        run(&mut g, 0.05, idle);
+        g.update(&Input { whip_pressed: true, ..Default::default() }, DT);
+        run(&mut g, 0.3, idle);
+        assert!(g.enemies.iter().all(|e| e.ko), "hedgehog knocked out");
+        assert_eq!(g.hearts, MAX_HEARTS);
+    }
+
+    #[test]
+    fn whip_combo_reaches_the_third_hit() {
+        let mut g = game(&["  P       ", "##########"]);
+        let mut best = 0;
+        let mut t = 0.0;
+        while t < 1.0 {
+            let press = [0.0, 0.1, 0.3].iter().any(|p| t >= *p && t < p + DT);
+            g.update(&Input { whip_pressed: press, ..Default::default() }, DT);
+            if let Some(w) = &g.whip {
+                best = best.max(w.stage);
+            }
+            t += DT;
+        }
+        assert_eq!(best, 3);
+    }
+
+    #[test]
+    fn ground_pound_breaks_cracked_floors() {
+        // landing normally doesn't break them
+        let mut g = game(&["  P   ", "      ", " BBB  ", "######"]);
+        run(&mut g, 1.0, idle);
+        assert!(g.cracked_gone.iter().all(|c| !c));
+        // a ground pound does, and Lulu drops through
+        let mut g = game(&["  P   ", "      ", "      ", "      ", " BBB  ", "      ", "      ", "######"]);
+        g.update(&Input { pound_pressed: true, ..Default::default() }, DT);
+        run(&mut g, 1.5, idle);
+        assert_eq!(g.cracked_gone.iter().filter(|c| **c).count(), 3);
+        assert!(g.body.on_ground && (g.body.pos.y + PH - (g.lv.h - 1) as f32 * TILE).abs() < 1.0, "feet at {} ground {}", g.body.pos.y + PH, g.body.on_ground);
+    }
+
+    #[test]
+    fn super_jump_goes_about_a_tile_higher() {
+        let height = |charge: bool| {
+            let mut rows = vec!["  P  "];
+            rows.extend(std::iter::repeat_n("     ", 8));
+            rows.push("#####");
+            let mut g = game(&rows);
+            run(&mut g, 0.5, idle);
+            let y0 = g.body.pos.y;
+            if charge {
+                run(&mut g, 0.5, |_| Input { down: true, ..Default::default() });
+            }
+            let mut top = y0;
+            let mut t = 0.0;
+            while t < 1.2 {
+                g.update(&Input { jump_pressed: t < DT, jump_held: true, ..Default::default() }, DT);
+                top = top.min(g.body.pos.y);
+                t += DT;
+            }
+            (y0 - top) / TILE
+        };
+        let (normal, sup) = (height(false), height(true));
+        assert!(sup > normal + 0.8 && sup < normal + 1.6, "normal {normal} super {sup}");
+    }
+
+    fn boss_game() -> Game {
+        let mut g = Game::new(Level::parse(crate::level::LEVELS[3]));
+        g.view_w = 640.0;
+        g.update_camera(0.0, true);
+        g
+    }
+
+    #[test]
+    fn boss_only_gets_hurt_when_tired() {
+        let mut g = boss_game();
+        run(&mut g, 4.0, idle);
+        let (hp, at) = g.boss.as_ref().map(|b| (b.hp, b.pos)).unwrap();
+        assert!(!g.boss_attacked(at, false));
+        assert_eq!(g.boss.as_ref().unwrap().hp, hp);
+        g.boss.as_mut().unwrap().state = BState::Tired;
+        assert!(g.boss_attacked(at, false));
+        assert_eq!(g.boss.as_ref().unwrap().hp, hp - 1);
+    }
+
+    #[test]
+    fn pounding_the_boss_head_hurts_it_any_time() {
+        let mut g = boss_game();
+        run(&mut g, 3.0, idle);
+        let bp = g.boss.as_ref().unwrap().pos;
+        g.body.pos = vec2(bp.x - PW / 2.0, bp.y - BOSS_H / 2.0 - PH - 8.0);
+        g.body.vel = Vec2::ZERO;
+        g.body.on_ground = false;
+        g.update(&Input { pound_pressed: true, ..Default::default() }, DT);
+        run(&mut g, 0.6, idle);
+        assert_eq!(g.boss.as_ref().unwrap().hp, BOSS_HP - 1);
+        assert_eq!(g.hearts, MAX_HEARTS);
+    }
+
+    #[test]
+    fn boss_arena_updraft_reaches_above_the_boss() {
+        let mut g = boss_game();
+        g.teleport(1, 9);
+        run(&mut g, 3.0, |t| Input { jump_pressed: t < DT || (t > 0.25 && t < 0.25 + DT), jump_held: true, ..Default::default() });
+        let boss_top = g.boss.as_ref().unwrap().pos.y - BOSS_H / 2.0;
+        assert!(g.body.pos.y + PH < boss_top, "feet at {} vs boss top {boss_top}", g.body.pos.y + PH);
+    }
+
+    #[test]
+    fn losing_a_life_restarts_the_boss_phase() {
+        let mut g = boss_game();
+        run(&mut g, 3.0, idle);
+        // finish phase 1 (2 hits), then one more hit in phase 2
+        for _ in 0..3 {
+            g.boss_damage();
+        }
+        let b = g.boss.as_ref().unwrap();
+        assert_eq!((b.phase, b.hp), (1, BOSS_HP - 3));
+        g.retry();
+        let b = g.boss.as_ref().unwrap();
+        assert_eq!((b.phase, b.hp), (1, BOSS_HP - PHASE_HP[0]));
+        assert_eq!(g.deaths, 1);
+    }
+
+    #[test]
+    fn beating_the_boss_opens_the_gate() {
+        let mut g = boss_game();
+        run(&mut g, 3.0, idle);
+        assert!(g.goal.x < 0.0, "no gate during the fight");
+        for _ in 0..BOSS_HP {
+            g.boss_damage();
+        }
+        assert_eq!(g.boss.as_ref().unwrap().state, BState::Defeated);
+        run(&mut g, 2.5, idle);
+        assert!(g.boss.as_ref().unwrap().gone);
+        let (gx, gy) = g.goal_tile;
+        g.teleport(gx + 1, gy);
+        run(&mut g, 0.5, idle);
+        assert!(g.cleared);
     }
 }

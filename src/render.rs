@@ -1,11 +1,39 @@
 //! All drawing: procedural world art (soft, rounded cartoon style, one look per level theme) + the Lulu sprite.
 
+mod boss;
+
+use std::sync::OnceLock;
+
 use macroquad::prelude::*;
 
 use crate::game::*;
 use crate::level::{Theme, Tile};
 use crate::physics::*;
 use crate::save::Progress;
+
+/// UI font: Microsoft YaHei from Windows (Chinese text). Falls back to the built-in font if it's missing.
+static FONT: OnceLock<Option<Font>> = OnceLock::new();
+
+pub fn load_font() {
+    let dir = std::path::PathBuf::from(std::env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".into())).join("Fonts");
+    let font = ["msyhbd.ttc", "msyh.ttc", "simhei.ttf", "Deng.ttf"]
+        .iter()
+        .filter_map(|f| std::fs::read(dir.join(f)).ok())
+        .find_map(|bytes| load_ttf_font_from_bytes(&bytes).ok());
+    let _ = FONT.set(font);
+}
+
+fn font() -> Option<&'static Font> {
+    FONT.get().and_then(|f| f.as_ref())
+}
+
+fn tp(size: f32, color: Color) -> TextParams<'static> {
+    TextParams { font: font(), font_size: size.round().max(1.0) as u16, font_scale: 1.0, color, ..Default::default() }
+}
+
+fn measure(s: &str, size: f32) -> TextDimensions {
+    measure_text(s, font(), size.round().max(1.0) as u16, 1.0)
+}
 
 pub struct Assets {
     pub lulu: Texture2D,
@@ -51,6 +79,9 @@ const HEART: Color = rgb(255, 84, 110);
 const HEART_DARK: Color = rgb(196, 40, 70);
 const JELLY_PINK: Color = rgb(255, 120, 190);
 const JELLY_LIGHT: Color = rgb(255, 200, 232);
+const TIE: Color = rgb(255, 104, 160);
+const TIE_DARK: Color = rgb(176, 44, 104);
+const TIE_LIGHT: Color = rgb(255, 196, 220);
 
 /// Per-theme tile colours.
 struct Pal {
@@ -117,12 +148,38 @@ const SKY: Pal = Pal {
     plank_dark: rgb(186, 206, 240),
 };
 
+const STORM: Pal = Pal {
+    fill: rgb(134, 142, 180),
+    fill_dark: rgb(78, 84, 124),
+    speck: rgb(116, 124, 164),
+    top: rgb(184, 192, 222),
+    top_light: rgb(214, 220, 242),
+    top_dark: rgb(108, 116, 156),
+    stone: rgb(110, 102, 154),
+    stone_light: rgb(150, 142, 194),
+    stone_mid: rgb(90, 82, 132),
+    stone_dark: rgb(62, 56, 98),
+    plank: rgb(196, 204, 230),
+    plank_light: rgb(226, 230, 246),
+    plank_dark: rgb(112, 120, 160),
+};
+
 fn pal(t: Theme) -> &'static Pal {
     match t {
         Theme::Meadow => &MEADOW,
         Theme::Factory => &FACTORY,
         Theme::Sky => &SKY,
+        Theme::Storm => &STORM,
     }
+}
+
+/// Run `f` with the world rotated by `angle` (radians) around `pivot` (world space).
+fn with_rotation(cam: Vec2, view_w: f32, pivot: Vec2, angle: f32, f: impl FnOnce()) {
+    let base = world_cam(cam.x, cam.y, view_w);
+    let offset = vec2(base.zoom.x * (pivot.x - base.target.x), -base.zoom.y * (pivot.y - base.target.y));
+    set_camera(&Camera2D { target: pivot, zoom: base.zoom, rotation: angle.to_degrees(), offset, ..Default::default() });
+    f();
+    set_camera(&base);
 }
 
 pub fn world_cam(x: f32, y: f32, w: f32) -> Camera2D {
@@ -198,6 +255,45 @@ pub fn draw_background(theme: Theme, cam: Vec2, view_w: f32, level_h: f32, t: f3
         Theme::Meadow => bg_meadow(cam, view_w, level_h, t),
         Theme::Factory => bg_factory(cam, view_w, level_h, t),
         Theme::Sky => bg_sky(cam, view_w, level_h, t),
+        Theme::Storm => bg_storm(cam, view_w, level_h, t, 0.0),
+    }
+}
+
+/// Dark storm sky; `clear` (0..1) fades it into the sunny sky once the boss is beaten.
+fn bg_storm(cam: Vec2, view_w: f32, level_h: f32, t: f32, clear: f32) {
+    if clear > 0.0 {
+        bg_sky(cam, view_w, level_h, t);
+    }
+    let a = 1.0 - clear;
+    if a <= 0.0 {
+        return;
+    }
+    set_default_camera();
+    let (sw, sh) = (screen_width(), screen_height());
+    gradient_rect(0.0, 0.0, sw, sh, with_a(rgb(40, 42, 80), a), with_a(rgb(104, 88, 132), a));
+    // heavy cloud layers
+    for (fx, fy, col, base, seed, spacing) in
+        [(0.08, 0.2, rgb(74, 74, 114), 90.0, 3, 230.0), (0.2, 0.35, rgb(60, 60, 98), 200.0, 4, 190.0), (0.35, 0.5, rgb(84, 86, 126), 470.0, 6, 150.0)]
+    {
+        let lx = layer_cam(cam, view_w, level_h, fx, fy);
+        for k in span(lx, view_w, spacing) {
+            let h = hash(k, seed);
+            let cx = k as f32 * spacing + (h % 80) as f32 + (t * 8.0 * fx) % spacing;
+            let cy = base + ((h >> 8) % 90) as f32;
+            cloud(cx, cy, 1.0 + ((h >> 16) % 60) as f32 / 100.0, with_a(col, a));
+        }
+        if base > 400.0 {
+            draw_rectangle(lx - 50.0, base + 15.0, view_w + 100.0, 2000.0, with_a(col, a));
+        }
+    }
+    // rain
+    set_default_camera();
+    let u = sh / VIEW_H;
+    for i in 0..70 {
+        let h = hash(i, 77);
+        let x = ((h % 1000) as f32 / 1000.0 * (sw + 200.0) + t * 90.0 * u) % (sw + 200.0) - 100.0;
+        let y = (((h >> 10) % 1000) as f32 / 1000.0 * sh + t * 420.0 * u) % sh;
+        draw_line(x, y, x - 5.0 * u, y + 14.0 * u, 1.2 * u, with_a(rgba(190, 200, 240, 90), a));
     }
 }
 
@@ -333,7 +429,20 @@ fn bg_sky(cam: Vec2, view_w: f32, level_h: f32, t: f32) {
 // ------------------------------------------------------------------------------------------ tiles
 
 fn solidish(t: Tile) -> bool {
-    matches!(t, Tile::Ground | Tile::Stone | Tile::TurretL | Tile::TurretR | Tile::Fake | Tile::Fan | Tile::Spring | Tile::SlideR | Tile::SlideL)
+    matches!(
+        t,
+        Tile::Ground
+            | Tile::Stone
+            | Tile::TurretL
+            | Tile::TurretR
+            | Tile::Fake
+            | Tile::Fan
+            | Tile::Spring
+            | Tile::SlideR
+            | Tile::SlideL
+            | Tile::Cracked
+            | Tile::Pedestal
+    )
 }
 
 fn groundish(t: Tile) -> bool {
@@ -378,7 +487,7 @@ fn draw_ground(g: &Game, tx: i32, ty: i32, alpha: f32) {
         return;
     }
     // exposed top: grass / icing / fluffy cloud
-    let bump = if lv.theme == Theme::Sky { 6.0 } else { 4.5 };
+    let bump = if matches!(lv.theme, Theme::Sky | Theme::Storm) { 6.0 } else { 4.5 };
     draw_rectangle(x, y + 9.0, TILE, 4.0, c(p.top_dark));
     if lv.theme == Theme::Factory {
         // icing drips
@@ -486,11 +595,37 @@ fn draw_stone(theme: Theme, x: f32, y: f32) {
                 draw_circle(x + ox - 0.4, y + oy - 0.4, 0.8, p.stone_light);
             }
         }
-        Theme::Sky => {
+        Theme::Sky | Theme::Storm => {
             draw_triangle(vec2(x + 6.0, y + 24.0), vec2(x + 12.0, y + 24.0), vec2(x + 22.0, y + 8.0), rgba(255, 255, 255, 120));
         }
         Theme::Meadow => draw_circle(x + 7.0, y + 10.0, 1.5, p.stone_light),
     }
+}
+
+/// Cookie floor with big cracks: a ground pound breaks it.
+fn draw_cracked(x: f32, y: f32, tx: i32, ty: i32) {
+    draw_cookie(x, y, 0.0, 1.0, tx, ty);
+    let c = CHOC;
+    let h = hash(tx, ty);
+    let o = (h % 6) as f32;
+    draw_line(x + 4.0, y + 8.0 + o, x + 14.0, y + 14.0, 2.0, c);
+    draw_line(x + 14.0, y + 14.0, x + 12.0, y + 24.0, 2.0, c);
+    draw_line(x + 14.0, y + 14.0, x + 24.0, y + 10.0, 2.0, c);
+    draw_line(x + 24.0, y + 10.0, x + 29.0, y + 18.0 - o, 2.0, c);
+    draw_line(x + 12.0, y + 24.0, x + 20.0, y + 29.0, 1.6, c);
+}
+
+/// Stone pedestal with a golden arrow: the super-jump spot.
+fn draw_pedestal(theme: Theme, x: f32, y: f32, t: f32) {
+    let p = pal(theme);
+    draw_rectangle(x + 2.0, y + 4.0, TILE - 4.0, TILE - 4.0, p.stone_dark);
+    draw_rectangle(x + 4.0, y + 6.0, TILE - 8.0, TILE - 8.0, p.stone);
+    draw_rectangle(x, y, TILE, 7.0, p.stone_dark);
+    draw_rectangle(x + 1.0, y + 1.0, TILE - 2.0, 4.0, p.stone_light);
+    let bob = (t * 4.0).sin() * 1.5;
+    let c = vec2(x + TILE / 2.0, y + 19.0 + bob);
+    draw_triangle(c + vec2(-7.0, 2.0), c + vec2(7.0, 2.0), c + vec2(0.0, -7.0), GOLD);
+    draw_rectangle(c.x - 2.5, c.y + 1.0, 5.0, 6.0, GOLD);
 }
 
 fn draw_turret(t: Option<&Turret>, x: f32, y: f32, dir: f32) {
@@ -522,7 +657,7 @@ fn draw_oneway(g: &Game, tx: i32, ty: i32, x: f32, y: f32) {
     let p = pal(g.lv.theme);
     let edge_l = g.lv.tile(tx - 1, ty) != Tile::OneWay;
     let edge_r = g.lv.tile(tx + 1, ty) != Tile::OneWay;
-    if g.lv.theme == Theme::Sky {
+    if matches!(g.lv.theme, Theme::Sky | Theme::Storm) {
         // fluffy cloud strip
         draw_rectangle(x, y + 2.0, TILE, 9.0, p.plank_dark);
         draw_rectangle(x, y, TILE, 8.0, p.plank);
@@ -741,6 +876,12 @@ pub fn draw_tiles(g: &Game) {
                 Tile::BoxHeart => draw_box(g, tx, ty, x, y, true),
                 Tile::SlideR | Tile::SlideL => draw_slide(g, tx, ty, x, y),
                 Tile::Sign(n) => draw_sign(g, x, y, n),
+                Tile::Cracked => {
+                    if !g.cracked_gone[lv.idx(tx, ty).unwrap()] {
+                        draw_cracked(x, y, tx, ty);
+                    }
+                }
+                Tile::Pedestal => draw_pedestal(lv.theme, x, y, g.t),
                 Tile::Empty | Tile::Bumper | Tile::Fake => {}
             }
         }
@@ -899,9 +1040,19 @@ fn draw_checkpoints(g: &Game) {
 }
 
 fn draw_goal(g: &Game) {
+    // in the boss arena the gate rises out of the floor once the boss is beaten
+    let sink = match &g.boss {
+        Some(b) if !b.gone => return,
+        Some(_) => (1.0 - (g.gate_t / 0.8).min(1.0)) * 140.0,
+        None => 0.0,
+    };
+    draw_gate(g, sink);
+}
+
+fn draw_gate(g: &Game, sink: f32) {
     let (gx, gy) = g.goal_tile;
     let x0 = gx as f32 * TILE;
-    let bottom = (gy + 1) as f32 * TILE;
+    let bottom = (gy + 1) as f32 * TILE + sink;
     let cream = rgb(250, 244, 230);
     let shimmer = (g.t * 3.0).sin() * 0.5 + 0.5;
     draw_rectangle(x0 + 20.0, bottom - 118.0, 56.0, 118.0, rgba(255, 240, 180, (60.0 + shimmer * 50.0) as u8));
@@ -914,9 +1065,9 @@ fn draw_goal(g: &Game) {
     }
     draw_rectangle(x0, bottom - 136.0, 96.0, 20.0, ORANGE_DARK);
     draw_rectangle(x0 + 2.0, bottom - 134.0, 92.0, 15.0, ORANGE);
-    let params = TextParams { font_size: 64, font_scale: 0.22, color: WHITE, ..Default::default() };
-    let d = measure_text("GOAL", None, 64, 0.22);
-    draw_text_ex("GOAL", x0 + 48.0 - d.width / 2.0, bottom - 121.0, params);
+    let params = TextParams { font: font(), font_size: 32, font_scale: 0.42, color: WHITE, ..Default::default() };
+    let d = measure_text("终点", font(), 32, 0.42);
+    draw_text_ex("终点", x0 + 48.0 - d.width / 2.0, bottom - 121.0, params);
     draw_orange(vec2(x0 + 48.0, bottom - 150.0), 11.0);
 }
 
@@ -1006,6 +1157,27 @@ fn draw_enemy(e: &Enemy, t: f32) {
             }
             draw_line(cx - 4.0, bottom - h * 0.48, cx + 4.0, bottom - h * 0.48, 1.2, rgb(40, 100, 40));
         }
+        EKind::Cloudlet => {
+            let col = rgb(150, 156, 190);
+            if e.dying > 0.0 {
+                draw_ellipse(cx, bottom - 3.0, r.w * 0.7, 4.0, 0.0, col);
+                return;
+            }
+            let cy = r.y + r.h / 2.0;
+            draw_circle(cx - 8.0, cy + 2.0, 7.0, col);
+            draw_circle(cx + 8.0, cy + 2.0, 7.0, col);
+            draw_circle(cx, cy - 3.0, 9.0, col);
+            draw_circle(cx - 3.0, cy - 6.0, 4.0, rgb(196, 200, 228));
+            for s in [-1.0, 1.0] {
+                let ex = cx + s * 5.0 + dir * 2.0;
+                draw_circle(ex, cy, 2.8, WHITE);
+                draw_circle(ex + dir, cy + 0.5, 1.4, INK);
+                draw_line(ex - 3.0 * s - 1.0, cy - 5.0 + s * dir, ex + 3.0 * s - 1.0, cy - 3.5, 1.4, INK);
+            }
+            // drizzle
+            let k = (t * 6.0 + r.x) % 1.0;
+            draw_line(cx - 4.0, bottom + k * 8.0, cx - 5.0, bottom + 3.0 + k * 8.0, 1.2, rgba(150, 200, 255, 200));
+        }
         EKind::Seed => {
             for k in 1..4 {
                 let lx = cx - dir * (8.0 + k as f32 * 5.0);
@@ -1057,14 +1229,38 @@ fn draw_player(g: &Game, a: &Assets) {
     if b.on_ground {
         draw_ellipse(b.pos.x + PW / 2.0, b.pos.y + PH, 13.0, 3.0, 0.0, rgba(0, 0, 0, 45));
     }
+    // super jump charge: a ring that fills up, then a golden glow
+    if b.crouch || b.super_grace > 0.0 {
+        let c = feet - vec2(0.0, h * 0.5);
+        if b.super_ready() {
+            let pulse = (g.t * 14.0).sin() * 0.5 + 0.5;
+            draw_circle(c.x, c.y, 26.0 + pulse * 4.0, rgba(255, 220, 90, (50.0 + pulse * 50.0) as u8));
+        } else {
+            let k = (b.charge / SUPER_CHARGE).min(1.0);
+            let n = (k * 12.0) as i32;
+            for i in 0..n {
+                let ang = -std::f32::consts::FRAC_PI_2 + i as f32 / 12.0 * std::f32::consts::TAU;
+                draw_circle(c.x + ang.cos() * 24.0, c.y + ang.sin() * 24.0, 2.4, rgba(255, 214, 80, 230));
+            }
+        }
+    }
+    if b.pound == Pound::Slam {
+        for k in 0..3 {
+            let lx = feet.x - 9.0 + k as f32 * 9.0;
+            let top = feet.y - h - 26.0 - (k % 2) as f32 * 8.0;
+            draw_line(lx, top, lx, top + 18.0, 2.0, rgba(255, 255, 255, 170));
+        }
+    }
+    let (rot, pivot) = if an.spin != 0.0 { (an.spin, feet - vec2(0.0, h * 0.5)) } else { (an.tilt, feet) };
     draw_texture_ex(
         &a.lulu,
         feet.x - w / 2.0,
         feet.y - h,
         color,
-        DrawTextureParams { dest_size: Some(vec2(w, h)), rotation: an.tilt, pivot: Some(feet), flip_x: b.facing < 0.0, ..Default::default() },
+        DrawTextureParams { dest_size: Some(vec2(w, h)), rotation: rot, pivot: Some(pivot), flip_x: b.facing < 0.0, ..Default::default() },
     );
-    if an.prop_speed > 1.0 {
+    draw_whip(g);
+    if an.prop_speed > 1.0 && an.spin == 0.0 {
         let (s, c) = an.tilt.sin_cos();
         let up = vec2(s, -c);
         let top = feet + up * (h - 3.0);
@@ -1073,6 +1269,70 @@ fn draw_player(g: &Game, a: &Assets) {
     if g.shield {
         let c = b.center() + vec2(0.0, -4.0);
         draw_bubble(c, 30.0, g.t);
+    }
+}
+
+/// Lulu's pink tie, stretched out as a whip.
+fn draw_whip(g: &Game) {
+    let Some(w) = &g.whip else { return };
+    let e = w.extension();
+    if e <= 0.02 {
+        return;
+    }
+    let b = &g.body;
+    let c = b.center();
+    let start = vec2(c.x + w.dir * 3.0, c.y + 1.0);
+    let len = 6.0 + w.reach() * e;
+    let arc = match w.stage {
+        1 => 9.0,
+        2 => -9.0,
+        _ => 0.0,
+    };
+    let n = 12;
+    let pts: Vec<Vec2> = (0..=n)
+        .map(|i| {
+            let f = i as f32 / n as f32;
+            let wave = (f * 9.0 - g.t * 40.0).sin() * 3.0 * (1.0 - e) * f;
+            vec2(start.x + w.dir * len * f, start.y + arc * (f * std::f32::consts::PI).sin() * (1.0 - e * 0.5) + wave)
+        })
+        .collect();
+    // swoosh trail in front
+    if w.t < 0.2 {
+        let a0 = if w.stage == 2 { 0.7 } else { -0.7 };
+        for k in 0..7 {
+            let f = k as f32 / 6.0;
+            let ang = a0 * (1.0 - f) * (1.0 - e);
+            let p = c + vec2(w.dir * (len + 6.0) * ang.cos(), (len + 6.0) * ang.sin() * 0.6);
+            draw_circle(p.x, p.y, 3.0 + f * 2.0, rgba(255, 255, 255, (40.0 + f * 90.0) as u8));
+        }
+    }
+    for (width, col) in [(7.0, TIE_DARK), (4.5, TIE)] {
+        for i in 0..n {
+            let taper = 1.0 - 0.35 * i as f32 / n as f32;
+            draw_line(pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y, width * taper, col);
+        }
+    }
+    for i in (0..n).step_by(3) {
+        draw_line(pts[i].x, pts[i].y - 1.0, pts[i + 1].x, pts[i + 1].y - 1.0, 1.2, TIE_LIGHT);
+    }
+    // the tie's pointy end
+    let tip = pts[n];
+    let d = w.dir;
+    draw_triangle(tip + vec2(d * 10.0, 0.0), tip + vec2(-d * 1.0, -6.5), tip + vec2(-d * 1.0, 6.5), TIE_DARK);
+    draw_triangle(tip + vec2(d * 8.0, 0.0), tip + vec2(0.0, -4.5), tip + vec2(0.0, 4.5), TIE);
+    if w.stage >= 3 {
+        let s = 4.0 + (g.t * 30.0).sin() * 1.5;
+        let p = tip + vec2(d * 12.0, 0.0);
+        draw_triangle(p - vec2(s, 0.0), p + vec2(s, 0.0), p - vec2(0.0, s * 1.8), GOLD_LIGHT);
+        draw_triangle(p - vec2(s, 0.0), p + vec2(s, 0.0), p + vec2(0.0, s * 1.8), GOLD_LIGHT);
+    }
+}
+
+fn draw_shockwaves(g: &Game) {
+    for (c, age) in &g.shockwaves {
+        let k = age / 0.4;
+        let r = 10.0 + POUND_RADIUS * k;
+        draw_ellipse_lines(c.x, c.y - 3.0, r, r * 0.22, 0.0, 4.0 * (1.0 - k) + 1.0, rgba(255, 255, 255, ((1.0 - k) * 220.0) as u8));
     }
 }
 
@@ -1086,26 +1346,42 @@ fn draw_particles(g: &Game) {
 /// Draw the whole world (background, tiles, objects, player) from the game's camera.
 pub fn draw_world(g: &Game, a: &Assets) {
     let level_h = g.lv.h as f32 * TILE;
-    draw_background(g.lv.theme, g.cam, g.view_w, level_h, g.t);
+    if g.lv.theme == Theme::Storm {
+        let clear = g.boss.as_ref().map_or(0.0, |b| if b.gone { (g.gate_t / 2.5).min(1.0) } else { 0.0 });
+        bg_storm(g.cam, g.view_w, level_h, g.t, clear);
+    } else {
+        draw_background(g.lv.theme, g.cam, g.view_w, level_h, g.t);
+    }
     let mut cam = g.cam;
     if g.shake > 0.0 {
         cam += vec2((g.t * 97.0).sin(), (g.t * 131.0).cos()) * g.shake * 12.0;
     }
     set_camera(&world_cam(cam.x, cam.y, g.view_w));
     draw_wind(g);
+    boss::draw_bolt_warnings(g);
     draw_goal(g);
     draw_checkpoints(g);
     draw_tiles(g);
     draw_plats(g);
     draw_items(g);
     for e in &g.enemies {
-        if e.active || e.kind != EKind::Seed {
+        if e.ko {
+            let c = e.pos + e.size / 2.0;
+            with_rotation(cam, g.view_w, c, e.spin, || draw_enemy(e, g.t));
+        } else if e.active || e.kind != EKind::Seed {
             draw_enemy(e, g.t);
         }
     }
+    boss::draw_boss_world(g);
     draw_player(g, a);
     draw_fake_tiles(g);
+    draw_shockwaves(g);
+    boss::draw_bolts(g);
     draw_particles(g);
+    if g.screen_flash > 0.0 {
+        set_default_camera();
+        draw_rectangle(0.0, 0.0, screen_width(), screen_height(), Color::new(1.0, 1.0, 0.95, g.screen_flash / 0.12 * 0.45));
+    }
 }
 
 // ------------------------------------------------------------------------------------------ UI
@@ -1115,26 +1391,29 @@ pub fn ui_scale() -> f32 {
 }
 
 pub fn text(s: &str, x: f32, y: f32, size: f32, color: Color) {
-    let shadow = TextParams { font_size: size as u16, color: Color::new(0.0, 0.0, 0.0, 0.45 * color.a), ..Default::default() };
-    draw_text_ex(s, x + size * 0.07, y + size * 0.07, shadow);
-    draw_text_ex(s, x, y, TextParams { font_size: size as u16, color, ..Default::default() });
+    draw_text_ex(s, x + size * 0.06, y + size * 0.06, tp(size, Color::new(0.0, 0.0, 0.0, 0.45 * color.a)));
+    draw_text_ex(s, x, y, tp(size, color));
 }
 
 pub fn text_center(s: &str, cx: f32, y: f32, size: f32, color: Color) {
-    let d = measure_text(s, None, size as u16, 1.0);
+    let d = measure(s, size);
     text(s, cx - d.width / 2.0, y, size, color);
 }
 
+fn text_right(s: &str, rx: f32, y: f32, size: f32, color: Color) {
+    let d = measure(s, size);
+    text(s, rx - d.width, y, size, color);
+}
+
 pub fn text_outline_center(s: &str, cx: f32, y: f32, size: f32, color: Color, outline: Color) {
-    let d = measure_text(s, None, size as u16, 1.0);
+    let d = measure(s, size);
     let x = cx - d.width / 2.0;
     let o = (size * 0.06).max(1.5);
-    let p = |c: Color| TextParams { font_size: size as u16, color: c, ..Default::default() };
-    draw_text_ex(s, x + o * 1.6, y + o * 1.9, p(Color::new(0.0, 0.0, 0.0, 0.35)));
+    draw_text_ex(s, x + o * 1.6, y + o * 1.9, tp(size, Color::new(0.0, 0.0, 0.0, 0.35 * color.a)));
     for (dx, dy) in [(-o, 0.0), (o, 0.0), (0.0, -o), (0.0, o), (-o, -o), (o, o), (-o, o), (o, -o)] {
-        draw_text_ex(s, x + dx, y + dy, p(outline));
+        draw_text_ex(s, x + dx, y + dy, tp(size, outline));
     }
-    draw_text_ex(s, x, y, p(color));
+    draw_text_ex(s, x, y, tp(size, color));
 }
 
 pub fn fmt_time(t: f32) -> String {
@@ -1195,8 +1474,8 @@ fn draw_sign_bubble(g: &Game, n: u8, world: Vec2) {
     let u = ui_scale();
     let lines: Vec<&str> = msg.split('|').map(|s| s.trim()).collect();
     let size = 12.0 * u;
-    let w = lines.iter().map(|l| measure_text(l, None, size as u16, 1.0).width).fold(0.0, f32::max) + 18.0 * u;
-    let h = lines.len() as f32 * 15.0 * u + 10.0 * u;
+    let w = lines.iter().map(|l| measure(l, size).width).fold(0.0, f32::max) + 20.0 * u;
+    let h = lines.len() as f32 * 17.0 * u + 10.0 * u;
     let sx = ((world.x - g.cam.x) * u).clamp(w / 2.0 + 6.0 * u, screen_width() - w / 2.0 - 6.0 * u);
     let sy = (world.y - g.cam.y) * u - 22.0 * u;
     let (x, y) = (sx - w / 2.0, sy - h);
@@ -1205,8 +1484,31 @@ fn draw_sign_bubble(g: &Game, n: u8, world: Vec2) {
     let tip = vec2(((world.x - g.cam.x) * u).clamp(x + 12.0 * u, x + w - 12.0 * u), sy + 8.0 * u);
     draw_triangle(vec2(tip.x - 7.0 * u, sy - 1.0), vec2(tip.x + 7.0 * u, sy - 1.0), tip, rgba(255, 251, 238, 245));
     for (i, l) in lines.iter().enumerate() {
-        let d = measure_text(l, None, size as u16, 1.0);
-        draw_text_ex(l, sx - d.width / 2.0, y + (16.0 + i as f32 * 15.0) * u, TextParams { font_size: size as u16, color: INK, ..Default::default() });
+        let d = measure(l, size);
+        draw_text_ex(l, sx - d.width / 2.0, y + (18.0 + i as f32 * 17.0) * u, tp(size, INK));
+    }
+}
+
+/// Comic speech bubble with a thick outline above a world position (screen space).
+fn speech_bubble(msg: &str, world: Vec2, g: &Game, size: f32, scale: f32, alpha: f32) {
+    let u = ui_scale();
+    let d = measure(msg, size);
+    let (w, h) = ((d.width + 22.0 * u) * scale, (size + 14.0 * u) * scale);
+    let sx = ((world.x - g.cam.x) * u).clamp(w / 2.0 + 6.0 * u, screen_width() - w / 2.0 - 6.0 * u);
+    let sy = (world.y - g.cam.y) * u - 14.0 * u;
+    let (x, y) = (sx - w / 2.0, sy - h);
+    let ink = with_a(INK, alpha);
+    let paper = with_a(rgb(255, 253, 244), alpha);
+    let tipx = ((world.x - g.cam.x) * u).clamp(x + 14.0 * u, x + w - 14.0 * u);
+    let o = 2.5 * u;
+    rounded_rect(x - o, y - o, w + 2.0 * o, h + 2.0 * o, 10.0 * u, ink);
+    draw_triangle(vec2(tipx - 8.0 * u, sy - 2.0), vec2(tipx + 4.0 * u, sy - 2.0), vec2(tipx - 6.0 * u, sy + 11.0 * u), ink);
+    rounded_rect(x, y, w, h, 8.0 * u, paper);
+    draw_triangle(vec2(tipx - 5.5 * u, sy - 3.0 * u), vec2(tipx + 1.5 * u, sy - 3.0 * u), vec2(tipx - 5.0 * u, sy + 6.5 * u), paper);
+    if scale > 0.6 {
+        let fs = size * scale;
+        let d = measure(msg, fs);
+        draw_text_ex(msg, sx - d.width / 2.0, y + h / 2.0 + fs * 0.36, tp(fs, with_a(rgb(214, 70, 120), alpha)));
     }
 }
 
@@ -1224,22 +1526,49 @@ pub fn draw_hud(g: &Game) {
         }
     }
     draw_orange(vec2(88.0 * u, 21.0 * u), 6.5 * u);
-    text(&format!("x{}", g.oranges), 98.0 * u, 26.5 * u, 15.0 * u, WHITE);
-    golden_slots(vec2(170.0 * u, 21.0 * u), 6.5 * u, 18.0 * u, |k| g.golden_mask & (1 << k) != 0);
+    text(&format!("x{}", g.oranges), 98.0 * u, 27.0 * u, 15.0 * u, WHITE);
+    if !g.lv.boss {
+        golden_slots(vec2(170.0 * u, 21.0 * u), 6.5 * u, 18.0 * u, |k| g.golden_mask & (1 << k) != 0);
+    }
     if g.shield {
         draw_bubble(vec2(236.0 * u, 21.0 * u), 9.0 * u, g.t);
     }
 
     let sw = screen_width();
-    let s = format!("{}   {}", g.lv.name.to_uppercase(), fmt_time(g.time));
-    let d = measure_text(&s, None, (14.0 * u) as u16, 1.0);
+    let s = format!("{}   {}", g.lv.name, fmt_time(g.time));
+    let d = measure(&s, 14.0 * u);
     rounded_rect(sw - d.width - 26.0 * u, 8.0 * u, d.width + 18.0 * u, 26.0 * u, 6.0 * u, panel);
-    text(&s, sw - 17.0 * u - d.width, 26.0 * u, 14.0 * u, WHITE);
+    text(&s, sw - 17.0 * u - d.width, 26.5 * u, 14.0 * u, WHITE);
+    boss::draw_boss_hud(g);
 
     if let Some((n, pos)) = g.sign {
         if g.alive && !g.cleared {
             draw_sign_bubble(g, n, pos);
         }
+    }
+    // "LuLu can fly!!!" when the propeller starts
+    if g.bubble_t > 0.0 && g.alive && !g.cleared {
+        let age = BUBBLE_TIME - g.bubble_t;
+        let pop = if age < 0.18 {
+            let k = age / 0.18;
+            1.0 + (1.0 - k) * (k * 9.0).sin() * 0.25 - (1.0 - k).powi(3)
+        } else {
+            1.0
+        };
+        let alpha = (g.bubble_t / 0.3).min(1.0);
+        let head = vec2(g.body.center().x, g.body.pos.y - 16.0);
+        speech_bubble("LuLu can fly！！！", head, g, 14.0 * u, pop.max(0.05), alpha);
+    }
+    // combo counter
+    if g.combo >= 2 && g.combo_pop.1 < 1.1 {
+        let age = g.combo_pop.1;
+        let at = g.combo_pop.0;
+        let pop = 1.0 + (0.15 - age).max(0.0) * 3.0;
+        let a = (1.0 - (age - 0.7).max(0.0) / 0.4).clamp(0.0, 1.0);
+        let x = (at.x - g.cam.x) * u;
+        let y = (at.y - g.cam.y - 26.0 - age * 24.0) * u;
+        let col = Color::new(1.0, 0.9, 0.35, a);
+        text_outline_center(&format!("连击 x{}!", g.combo), x, y, 17.0 * u * pop, col, Color::new(0.75, 0.2, 0.35, a));
     }
 
     if let Some((msg, t)) = g.toast {
@@ -1304,23 +1633,26 @@ pub fn draw_title(a: &Assets, t: f32, blink: bool) {
     let tx = sw / 2.0 - 120.0 * u;
     text_outline_center("SUPER", tx, 84.0 * u, 52.0 * u, rgb(255, 246, 220), rgb(214, 104, 20));
     text_outline_center("LULU", tx, 142.0 * u, 72.0 * u, rgb(255, 196, 60), rgb(150, 70, 20));
-    text_center("~ a sweet little adventure ~", tx, 166.0 * u, 13.0 * u, rgb(255, 255, 255));
+    text_center("~ 甜甜的小冒险 ~", tx, 168.0 * u, 13.0 * u, rgb(255, 255, 255));
     if blink {
-        text_outline_center("PRESS ENTER", tx, 204.0 * u, 22.0 * u, WHITE, rgb(60, 110, 200));
+        text_outline_center("按 Enter 开始", tx, 202.0 * u, 20.0 * u, WHITE, rgb(60, 110, 200));
     }
-    text("ESC quit", 10.0 * u, VIEW_H * u - 10.0 * u, 11.0 * u, rgba(255, 255, 255, 200));
-    let lines = [
-        "ARROWS / A D ...... move",
-        "Z / SPACE / K ..... jump (hold = higher)",
-        "  again in the air  glide (keep holding)",
-        "X / SHIFT / J ..... run",
-        "C / L ............. throw an orange",
-        "R retry  ESC pause  M mute  F11 full",
+    text("Esc 退出", 10.0 * u, VIEW_H * u - 10.0 * u, 11.0 * u, rgba(255, 255, 255, 200));
+    let rows = [
+        ("A  D", "移动"),
+        ("W", "跳（按越久跳越高）"),
+        ("空中再按住 W", "滑翔"),
+        ("按住 S 再按 W", "超级跳"),
+        ("Shift", "加速跑"),
+        ("J  /  K  /  L", "领带鞭 / 屁股墩 / 扔橘子"),
     ];
-    rounded_rect(tx - 150.0 * u, 218.0 * u, 300.0 * u, 106.0 * u, 8.0 * u, rgba(30, 20, 40, 120));
-    for (i, l) in lines.iter().enumerate() {
-        text(l, tx - 138.0 * u, (236.0 + i as f32 * 16.0) * u, 13.0 * u, rgb(255, 250, 235));
+    rounded_rect(tx - 152.0 * u, 214.0 * u, 304.0 * u, 128.0 * u, 8.0 * u, rgba(30, 20, 40, 120));
+    for (i, (k, v)) in rows.iter().enumerate() {
+        let y = (232.0 + i as f32 * 16.5) * u;
+        text_right(k, tx - 22.0 * u, y, 12.5 * u, rgb(255, 214, 110));
+        text(v, tx - 10.0 * u, y, 12.5 * u, rgb(255, 250, 235));
     }
+    text_center("R 重来   Esc 暂停   M 静音   F11 全屏", tx, 335.0 * u, 11.0 * u, rgba(255, 250, 235, 220));
 }
 
 /// Little theme picture on a level card.
@@ -1353,6 +1685,16 @@ fn draw_card_art(theme: Theme, x: f32, y: f32, w: f32, h: f32, u: f32, t: f32) {
             cloud(x + w * 0.55, y + h * 0.82, 0.6 * u, WHITE);
             cloud(x + w * 0.35, y + h * 0.35, 0.3 * u, rgba(255, 255, 255, 200));
         }
+        Theme::Storm => {
+            gradient_rect(x, y, w, h, rgb(40, 42, 80), rgb(104, 88, 132));
+            let c = vec2(x + w * 0.5, y + h * 0.42);
+            boss::draw_storm_face(c, 0.62 * u, t, 0.0, false);
+            let bx = x + w * 0.22;
+            let pts = [vec2(bx, y + h * 0.55), vec2(bx - 6.0 * u, y + h * 0.75), vec2(bx + 3.0 * u, y + h * 0.75), vec2(bx - 4.0 * u, y + h * 0.98)];
+            for k in 0..3 {
+                draw_line(pts[k].x, pts[k].y, pts[k + 1].x, pts[k + 1].y, 3.0 * u, GOLD);
+            }
+        }
     }
 }
 
@@ -1361,9 +1703,9 @@ pub fn draw_level_select(names: &[(String, Theme)], progress: &Progress, sel: us
     set_default_camera();
     let u = ui_scale();
     let sw = screen_width();
-    text_outline_center("CHOOSE A LEVEL", sw / 2.0, 58.0 * u, 34.0 * u, rgb(255, 246, 220), rgb(214, 104, 20));
+    text_outline_center("选择关卡", sw / 2.0, 60.0 * u, 32.0 * u, rgb(255, 246, 220), rgb(214, 104, 20));
     let n = names.len() as f32;
-    let (cw, ch, gap) = (150.0 * u, 190.0 * u, 18.0 * u);
+    let (cw, ch, gap) = if names.len() > 3 { (136.0 * u, 190.0 * u, 12.0 * u) } else { (150.0 * u, 190.0 * u, 18.0 * u) };
     let x0 = sw / 2.0 - (n * cw + (n - 1.0) * gap) / 2.0;
     for (i, (name, theme)) in names.iter().enumerate() {
         let unlocked = progress.unlocked(i);
@@ -1381,11 +1723,17 @@ pub fn draw_level_select(names: &[(String, Theme)], progress: &Progress, sel: us
         clip(Some((ax, ay, aw, ah)));
         draw_card_art(*theme, ax, ay, aw, ah, u, t);
         clip(None);
-        text_center(&format!("{}", i + 1), x + cw / 2.0, ay + ah + 26.0 * u, 26.0 * u, ORANGE_DARK);
-        text_center(&name.to_uppercase(), x + cw / 2.0, ay + ah + 46.0 * u, 13.0 * u, INK);
+        let boss_card = *theme == Theme::Storm;
+        let label = if boss_card { "BOSS".to_string() } else { format!("{}", i + 1) };
+        text_center(&label, x + cw / 2.0, ay + ah + 26.0 * u, 24.0 * u, if boss_card { rgb(150, 70, 190) } else { ORANGE_DARK });
+        text_center(name, x + cw / 2.0, ay + ah + 46.0 * u, 13.0 * u, INK);
         if unlocked {
-            golden_slots(vec2(x + cw / 2.0 - 18.0 * u, ay + ah + 62.0 * u), 6.0 * u, 18.0 * u, |k| save.goldens & (1 << k) != 0);
-            let best = save.best_time.map(|b| format!("BEST {}", fmt_time(b))).unwrap_or_else(|| "NEW!".into());
+            if !boss_card {
+                golden_slots(vec2(x + cw / 2.0 - 18.0 * u, ay + ah + 62.0 * u), 6.0 * u, 18.0 * u, |k| save.goldens & (1 << k) != 0);
+            } else if save.cleared {
+                text_center("已击败！", x + cw / 2.0, ay + ah + 66.0 * u, 12.0 * u, rgb(150, 70, 190));
+            }
+            let best = save.best_time.map(|b| format!("最佳 {}", fmt_time(b))).unwrap_or_else(|| "新关卡！".into());
             text_center(&best, x + cw / 2.0, ay + ah + 84.0 * u, 12.0 * u, rgb(120, 90, 70));
         } else {
             rounded_rect(x, y, cw, ch, 10.0 * u, rgba(40, 30, 50, 150));
@@ -1394,11 +1742,11 @@ pub fn draw_level_select(names: &[(String, Theme)], progress: &Progress, sel: us
             draw_circle_lines(c.x, c.y - 10.0 * u, 10.0 * u, 4.0 * u, rgb(230, 230, 240));
             rounded_rect(c.x - 15.0 * u, c.y - 6.0 * u, 30.0 * u, 24.0 * u, 4.0 * u, rgb(255, 214, 90));
             draw_circle(c.x, c.y + 4.0 * u, 3.5 * u, rgb(150, 100, 40));
-            text_center("clear the last level", x + cw / 2.0, ay + ah + 84.0 * u, 11.0 * u, rgb(240, 236, 250));
+            text_center("先通过上一关", x + cw / 2.0, ay + ah + 84.0 * u, 11.0 * u, rgb(240, 236, 250));
         }
     }
     if ((t * 2.0) as i32) % 2 == 0 {
-        text_center("LEFT / RIGHT choose      ENTER play      ESC back", sw / 2.0, 318.0 * u, 14.0 * u, WHITE);
+        text_center("A D 选择      Enter 开始      Esc 返回", sw / 2.0, 318.0 * u, 14.0 * u, WHITE);
     }
 }
 
@@ -1406,11 +1754,19 @@ pub fn draw_pause() {
     dim(0.55);
     let u = ui_scale();
     let cx = screen_width() / 2.0;
-    text_outline_center("PAUSED", cx, 150.0 * u, 48.0 * u, WHITE, rgb(60, 110, 200));
-    text_center("ESC resume      R retry      Q level select", cx, 200.0 * u, 15.0 * u, WHITE);
+    text_outline_center("暂停", cx, 150.0 * u, 44.0 * u, WHITE, rgb(60, 110, 200));
+    text_center("Esc 继续      R 从存档点重来      Q 回到选关", cx, 200.0 * u, 15.0 * u, WHITE);
 }
 
 pub fn rank(g: &Game) -> &'static str {
+    if g.lv.boss {
+        return match g.deaths {
+            0 => "S",
+            1 => "A",
+            2..=3 => "B",
+            _ => "C",
+        };
+    }
     match g.deaths {
         0 if g.goldens >= 3 => "S",
         0 | 1 => "A",
@@ -1428,23 +1784,27 @@ pub fn draw_clear(g: &Game, new_best: bool, has_next: bool) {
     let u = ui_scale();
     let cx = screen_width() / 2.0;
     let a = k;
-    text_outline_center("COURSE CLEAR!", cx, 84.0 * u, 46.0 * u, Color::new(1.0, 0.85, 0.3, a), Color::new(0.6, 0.25, 0.05, a));
-    let rows = [
-        format!("TIME          {}", fmt_time(g.time)),
-        format!("ORANGES       {}/{}", g.collected, g.orange_total),
-        format!("GOLDEN        {}/3", g.goldens),
-        format!("LIVES LOST    {}", g.deaths),
-    ];
-    for (i, r) in rows.iter().enumerate() {
-        text(r, cx - 110.0 * u, (130.0 + i as f32 * 22.0) * u, 17.0 * u, Color::new(1.0, 1.0, 1.0, a));
+    let title = if g.lv.boss { "打败了雷雨云大王！" } else { "过关啦！" };
+    text_outline_center(title, cx, 86.0 * u, 40.0 * u, Color::new(1.0, 0.85, 0.3, a), Color::new(0.6, 0.25, 0.05, a));
+    let mut rows = vec![("用时", fmt_time(g.time))];
+    if !g.lv.boss {
+        rows.push(("橘子", format!("{}/{}", g.collected, g.orange_total)));
+        rows.push(("金橘子", format!("{}/3", g.goldens)));
+    }
+    rows.push(("丢命", format!("{}", g.deaths)));
+    let white = Color::new(1.0, 1.0, 1.0, a);
+    for (i, (k, v)) in rows.iter().enumerate() {
+        let y = (132.0 + i as f32 * 23.0) * u;
+        text(k, cx - 100.0 * u, y, 17.0 * u, Color::new(1.0, 0.85, 0.5, a));
+        text_right(v, cx + 100.0 * u, y, 17.0 * u, white);
     }
     if new_best {
         let wob = (g.t * 6.0).sin() * 2.0 * u;
-        text_outline_center("NEW BEST!", cx + 150.0 * u, 130.0 * u + wob, 16.0 * u, Color::new(1.0, 0.95, 0.6, a), Color::new(0.85, 0.2, 0.3, a));
+        text_outline_center("新纪录！", cx + 158.0 * u, 132.0 * u + wob, 16.0 * u, Color::new(1.0, 0.95, 0.6, a), Color::new(0.85, 0.2, 0.3, a));
     }
-    text_outline_center(&format!("RANK {}", rank(g)), cx, 242.0 * u, 34.0 * u, Color::new(1.0, 0.95, 0.7, a), Color::new(0.75, 0.35, 0.05, a));
+    text_outline_center(&format!("评级  {}", rank(g)), cx, 244.0 * u, 32.0 * u, Color::new(1.0, 0.95, 0.7, a), Color::new(0.75, 0.35, 0.05, a));
     if g.clear_t > 2.0 && ((g.clear_t * 2.0) as i32) % 2 == 0 {
-        let msg = if has_next { "ENTER next level      ESC level select" } else { "ENTER level select      R play again" };
+        let msg = if has_next { "Enter 下一关      Esc 回到选关" } else { "Enter 回到选关      R 再玩一次" };
         text_center(msg, cx, 296.0 * u, 15.0 * u, WHITE);
     }
 }

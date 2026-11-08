@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-pub const LEVEL_COUNT: usize = 3;
+pub const LEVEL_COUNT: usize = 4;
 
 #[derive(Clone, Copy, Default, Debug, PartialEq)]
 pub struct LevelSave {

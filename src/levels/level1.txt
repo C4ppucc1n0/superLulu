@@ -1,7 +1,8 @@
-; SUPER LULU - Orange Meadow
+; SUPER LULU - 橘子草原
 ; Each '---' block is a slice of the level; blocks are joined left-to-right and bottom-aligned.
 ; Lines starting with ';' are comments, lines starting with '@' are settings:
-;   @name <text>   @theme meadow|factory|sky   @wind <updraft height in tiles>   @signN <text, '|' = new line>
+;   @name <text>   @theme meadow|factory|sky|storm   @wind <updraft height in tiles>   @signN <text, '|' = new line>
+;   @boss          boss arena: the goal gate only appears once the boss is beaten
 ; #  ground          X  stone block      =  jump-through platform   C  crumbling cookie
 ; ^  floor spikes    o  orange           *  golden orange (3)       +  heart
 ; S  shield bubble   P  player start     K  checkpoint              G  goal gate (bottom-left)
@@ -11,14 +12,17 @@
 ; |  invisible bumper: turns moving platforms and walking enemies around
 ; T  jelly spring    U  fan (updraft above it)   Q  cookie box (3 oranges)   R  cookie box (heart)
 ; %  fake ground (secret room: looks solid, you can walk through it)   \ /  slides (\ goes down to the right, / down to the left)
+; B  cracked cookie floor (a ground pound breaks it)   Y  super jump pedestal
 ; 1-9  signpost (text from @signN)
-@name Orange Meadow
+@name 橘子草原
 @theme meadow
 @wind 8
-@sign1 Hold jump to jump higher.|Hold X to run.
-@sign2 Bump cookie boxes from below!|A hole only costs one heart.
-@sign3 Press C to throw an orange.|It knocks out any critter,|even a spiky hedgehog!
-@sign4 Jump, then press jump AGAIN|and HOLD it to glide!
+@sign1 按住 W 跳得更高|按住 Shift 加速跑
+@sign2 从下面顶饼干箱子！|掉进坑里只扣一颗心
+@sign3 按 J 甩领带鞭，连按三下是连击！|按 L 扔橘子|刺猬也能打晕哦
+@sign5 空中按 K 屁股墩！|能砸开有裂纹的饼干地板
+@sign4 跳起来后在空中再按住 W|就能滑翔！
+@sign6 站在石墩上按住 S 蓄力|再按 W 超级跳！
 --- columns 0-59
                                                             
                                                             
@@ -31,12 +35,12 @@
                                                             
                                                             
                                                oooo         
-                                         *           oooo   
-                             ooo        ===   ######\       
-            Q            oooo                 #######\      
-       ooo     oo                             ########\     
-                         ####                 #########\    
-   P 1    2          e   ####     3|  h  |    ##########\   
+                                         *    5      oooo   
+                             ooo        ===   ##BBB#\       
+            Q            oooo                 ##   ##\      
+       ooo     oo                             ##   ###\     
+                         ####                 ##ooo####\    
+   P 1    2          e   ####     3|  h  |    ####T#####\   
 ###############  ############   ############T###############
 ###############  ############   ############################
 ###############  ############   ############################
@@ -72,13 +76,13 @@ o  o                    o     %%%%%%%%##
                                                           
                                                           
                                                           
-                             ooooo  o o                   
-                                        o   *             
+    oo+                      ooooo  o o                   
+    XXX                                 o   *             
                             =======       XXXX            
-     R                                                    
+                          R                               
                                                           
-             oooooooo                                     
- K       e             | e  |         ooo        G        
+   Y         oooooooo                                     
+ K6X     e             | e  |         ooo        G        
 ############CCCCCCCCCC#########T##########################
 ############          ####################################
 ############          ####################################

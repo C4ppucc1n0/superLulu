@@ -1,0 +1,34 @@
+; SUPER LULU - 雷云之巅
+; Each '---' block is a slice of the level; blocks are joined left-to-right and bottom-aligned.
+; Lines starting with ';' are comments, lines starting with '@' are settings:
+;   @name <text>   @theme meadow|factory|sky|storm   @wind <updraft height in tiles>   @signN <text, '|' = new line>
+;   @boss          boss arena: the goal gate only appears once the boss is beaten
+; #  ground          X  stone block      =  jump-through platform   C  crumbling cookie
+; ^  floor spikes    o  orange           *  golden orange (3)       +  heart
+; S  shield bubble   P  player start     K  checkpoint              G  goal gate (bottom-left)
+; e  jelly (stomp)   h  hedgehog (spiky: throw oranges or avoid)    f  frog (hops at you)
+; <  turret firing left   >  turret firing right
+; H  horizontal moving platform (run of H = one platform)   V  vertical moving platform
+; |  invisible bumper: turns moving platforms and walking enemies around
+; T  jelly spring    U  fan (updraft above it)   Q  cookie box (3 oranges)   R  cookie box (heart)
+; %  fake ground (secret room: looks solid, you can walk through it)   \ /  slides (\ goes down to the right, / down to the left)
+; B  cracked cookie floor (a ground pound breaks it)   Y  super jump pedestal
+; 1-9  signpost (text from @signN)
+@name 雷云之巅
+@theme storm
+@wind 10
+@boss
+@sign1 等它累了掉下来，再狠狠揍它！|也可以乘风飞上去，按 K 砸它头顶
+--- columns 0-23
+X                      X
+X                      X
+X                      X
+X                      X
+X                      X
+X                      X
+X      o        o      X
+X     ===      ===     X
+X                      X
+X   1 P   G            X
+XUU##################UUX
+XXX##################XXX

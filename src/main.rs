@@ -52,30 +52,61 @@ fn any_pressed(keys: &[KeyCode]) -> bool {
     keys.iter().any(|k| is_key_pressed(*k))
 }
 
-const JUMP: &[KeyCode] = &[KeyCode::Z, KeyCode::Space, KeyCode::K, KeyCode::Up, KeyCode::W];
-const RUN: &[KeyCode] = &[KeyCode::X, KeyCode::LeftShift, KeyCode::RightShift, KeyCode::J];
-const THROW: &[KeyCode] = &[KeyCode::C, KeyCode::L];
+// W A D move and jump, S crouches (hold it, then W = super jump), J K L attack.
+const JUMP: &[KeyCode] = &[KeyCode::W, KeyCode::Space, KeyCode::Up];
+const RUN: &[KeyCode] = &[KeyCode::LeftShift, KeyCode::RightShift];
+const DOWN: &[KeyCode] = &[KeyCode::S, KeyCode::Down];
+const WHIP: &[KeyCode] = &[KeyCode::J];
+const POUND: &[KeyCode] = &[KeyCode::K];
+const THROW: &[KeyCode] = &[KeyCode::L];
 const LEFT: &[KeyCode] = &[KeyCode::Left, KeyCode::A];
 const RIGHT: &[KeyCode] = &[KeyCode::Right, KeyCode::D];
-const START: &[KeyCode] = &[KeyCode::Enter, KeyCode::KpEnter, KeyCode::Space, KeyCode::Z];
+const START: &[KeyCode] = &[KeyCode::Enter, KeyCode::KpEnter, KeyCode::Space];
 
-/// Debug/preview mode, renders a few frames, saves a screenshot and exits:
-/// `super_lulu --shot out.png <level 1-3> <tile_x> <tile_y> [frames] [hold-right|glide]`,
+/// Debug/preview mode, plays for a moment, saves a screenshot and exits:
+/// `super_lulu --shot out.png <level> <tile_x> <tile_y> [seconds] [hold-right|glide|super|whip|pound|tired|defeat]`,
 /// `super_lulu --title-shot out.png` or `super_lulu --select-shot out.png`.
 struct Shot {
     out: String,
     screen: State,
     level: usize,
     tile: (i32, i32),
-    frames: u32,
-    hold_right: bool,
-    /// Run right, jump, then press jump again and keep holding it.
-    glide: bool,
+    secs: f32,
+    action: String,
+}
+
+/// Scripted input for a screenshot, for the frame that covers game time t0..t1.
+#[derive(Default)]
+struct Script {
+    right: bool,
+    down: bool,
+    jump_held: bool,
+    jump: bool,
+    whip: bool,
+    pound: bool,
+}
+
+impl Shot {
+    fn script(&self, t0: f32, t1: f32) -> Script {
+        let at = |t: f32| t0 < t && t <= t1;
+        match self.action.as_str() {
+            "hold-right" => Script { right: true, ..Default::default() },
+            // run right, jump, then press jump again and keep holding it
+            "glide" => Script { right: true, jump_held: true, jump: at(0.1) || at(0.55), ..Default::default() },
+            // crouch to charge, then super jump to the right
+            "super" => Script { down: t1 > 0.1 && t1 < 0.65, jump: at(0.66), jump_held: t1 > 0.66, right: t1 > 0.75, ..Default::default() },
+            // three-hit combo
+            "whip" => Script { whip: at(0.1) || at(0.2) || at(0.45), ..Default::default() },
+            // jump, then ground pound
+            "pound" => Script { jump: at(0.1), jump_held: t1 < 0.4, pound: at(0.45), ..Default::default() },
+            _ => Script::default(),
+        }
+    }
 }
 
 fn parse_shot() -> Option<Shot> {
     let a: Vec<String> = std::env::args().collect();
-    let simple = |screen| Some(Shot { out: a.get(2)?.clone(), screen, level: 0, tile: (0, 0), frames: 30, hold_right: false, glide: false });
+    let simple = |screen| Some(Shot { out: a.get(2)?.clone(), screen, level: 0, tile: (0, 0), secs: 0.5, action: String::new() });
     match a.get(1).map(|s| s.as_str()) {
         Some("--title-shot") => simple(State::Title),
         Some("--select-shot") => simple(State::Select),
@@ -84,9 +115,8 @@ fn parse_shot() -> Option<Shot> {
             screen: State::Playing,
             level: a.get(3)?.parse::<usize>().ok()?.clamp(1, LEVELS.len()) - 1,
             tile: (a.get(4)?.parse().ok()?, a.get(5)?.parse().ok()?),
-            frames: a.get(6).and_then(|s| s.parse().ok()).unwrap_or(40),
-            hold_right: a.get(7).is_some_and(|s| s == "hold-right" || s == "glide"),
-            glide: a.get(7).is_some_and(|s| s == "glide"),
+            secs: a.get(6).and_then(|s| s.parse().ok()).unwrap_or(0.7),
+            action: a.get(7).cloned().unwrap_or_default(),
         }),
         _ => None,
     }
@@ -101,6 +131,7 @@ fn new_game(level: usize) -> Game {
 
 #[macroquad::main(window_conf)]
 async fn main() {
+    render::load_font();
     let assets = render::Assets::load();
     let mut audio = audio::Audio::load().await;
     let names: Vec<(String, Theme)> = LEVELS
@@ -118,12 +149,14 @@ async fn main() {
     let mut acc = 0.0f32;
     let mut pending_jump = false;
     let mut pending_throw = false;
+    let mut pending_whip = false;
+    let mut pending_pound = false;
     let mut fullscreen = false;
     let mut title_t = 0.0f32;
     let mut new_best = false;
 
     let shot = parse_shot();
-    let mut frame = 0u32;
+    let mut shot_t = 0.0f32;
     if let Some(s) = &shot {
         state = s.screen;
         if s.screen == State::Playing {
@@ -134,7 +167,8 @@ async fn main() {
     }
 
     loop {
-        let dt = get_frame_time().min(0.05);
+        // screenshots run on a fixed clock so they come out the same every time
+        let dt = if shot.is_some() { 1.0 / 60.0 } else { get_frame_time().min(0.05) };
         game.view_w = screen_width() / screen_height().max(1.0) * VIEW_H;
 
         if is_key_pressed(KeyCode::F11) || (is_key_pressed(KeyCode::Enter) && any_down(&[KeyCode::LeftAlt, KeyCode::RightAlt])) {
@@ -146,22 +180,20 @@ async fn main() {
         }
         let alt = any_down(&[KeyCode::LeftAlt, KeyCode::RightAlt]);
 
-        let scripted_right = shot.as_ref().is_some_and(|s| s.hold_right);
-        let scripted_glide = shot.as_ref().is_some_and(|s| s.glide);
+        let sc = shot.as_ref().map(|s| s.script(shot_t, shot_t + dt)).unwrap_or_default();
         let mut input = Input {
-            dir: (any_down(RIGHT) || scripted_right) as i32 as f32 - any_down(LEFT) as i32 as f32,
-            run: any_down(RUN) || scripted_right,
-            jump_pressed: false,
-            jump_held: any_down(JUMP) || scripted_glide,
-            throw_pressed: false,
+            dir: (any_down(RIGHT) || sc.right) as i32 as f32 - any_down(LEFT) as i32 as f32,
+            run: any_down(RUN) || sc.right,
+            down: any_down(DOWN) || sc.down,
+            jump_held: any_down(JUMP) || sc.jump_held,
+            ..Default::default()
         };
-        if any_pressed(JUMP) || (scripted_glide && (frame == 2 || frame == 30)) {
-            pending_jump = true;
-        }
-        if any_pressed(THROW) {
-            pending_throw = true;
-        }
+        pending_jump |= any_pressed(JUMP) || sc.jump;
+        pending_throw |= any_pressed(THROW);
+        pending_whip |= any_pressed(WHIP) || sc.whip;
+        pending_pound |= any_pressed(POUND) || sc.pound;
 
+        let was_playing = state == State::Playing;
         match state {
             State::Title => {
                 title_t += dt;
@@ -187,8 +219,6 @@ async fn main() {
                     level = sel;
                     game = new_game(level);
                     state = State::Playing;
-                    pending_jump = false;
-                    pending_throw = false;
                     acc = 0.0;
                     audio.start_bgm(level);
                 }
@@ -209,8 +239,6 @@ async fn main() {
                         level += 1;
                         game = new_game(level);
                         state = State::Playing;
-                        pending_jump = false;
-                        pending_throw = false;
                         audio.start_bgm(level);
                     } else if go || is_key_pressed(KeyCode::Escape) {
                         state = State::Select;
@@ -225,10 +253,15 @@ async fn main() {
                 if state == State::Playing || state == State::Cleared {
                     acc += dt;
                     while acc >= FIXED_DT {
-                        input.jump_pressed = pending_jump && state == State::Playing;
-                        input.throw_pressed = pending_throw && state == State::Playing;
+                        let live = state == State::Playing;
+                        input.jump_pressed = pending_jump && live;
+                        input.throw_pressed = pending_throw && live;
+                        input.whip_pressed = pending_whip && live;
+                        input.pound_pressed = pending_pound && live;
                         pending_jump = false;
                         pending_throw = false;
+                        pending_whip = false;
+                        pending_pound = false;
                         game.update(&input, FIXED_DT);
                         acc -= FIXED_DT;
                     }
@@ -248,8 +281,6 @@ async fn main() {
                 }
             }
             State::Paused => {
-                pending_jump = false;
-                pending_throw = false;
                 if is_key_pressed(KeyCode::Escape) {
                     state = State::Playing;
                     acc = 0.0;
@@ -263,6 +294,11 @@ async fn main() {
                     audio.stop_bgm();
                 }
             }
+        }
+
+        // presses made outside of play must not leak into the game
+        if !was_playing || state != State::Playing {
+            (pending_jump, pending_throw, pending_whip, pending_pound) = (false, false, false, false);
         }
 
         clear_background(BLACK);
@@ -293,8 +329,19 @@ async fn main() {
         }
 
         if let Some(s) = &shot {
-            frame += 1;
-            if frame >= s.frames {
+            // boss previews: skip ahead to the tired / beaten boss
+            if shot_t <= 3.0 && shot_t + dt > 3.0 {
+                if let Some(b) = game.boss.as_mut() {
+                    match s.action.as_str() {
+                        "tired" => b.state = game::BState::Tired,
+                        "defeat" => b.state = game::BState::Defeated,
+                        _ => {}
+                    }
+                    b.t = 0.0;
+                }
+            }
+            shot_t += dt;
+            if shot_t >= s.secs {
                 get_screen_data().export_png(&s.out);
                 break;
             }

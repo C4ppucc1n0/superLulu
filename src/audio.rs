@@ -257,6 +257,106 @@ fn make_sfx(s: Sfx) -> Synth {
             }
             y
         }
+        Sfx::Whip => {
+            let mut y = Synth::new(0.16);
+            y.tone(0.0, 0.14, 9000.0, 2500.0, Noise, 0.3, 0.01, 0.1, 0.0);
+            y.tone(0.0, 0.08, 500.0, 1300.0, Square(0.125), 0.08, 0.004, 0.05, 0.0);
+            y
+        }
+        Sfx::WhipHit => {
+            let mut y = Synth::new(0.18);
+            y.tone(0.0, 0.12, 340.0, 70.0, Square(0.5), 0.35, 0.001, 0.08, 0.0);
+            y.tone(0.0, 0.07, 6000.0, 1500.0, Noise, 0.3, 0.001, 0.06, 0.0);
+            y.tone(0.0, 0.1, 180.0, 50.0, Sine, 0.5, 0.001, 0.08, 0.0);
+            y
+        }
+        Sfx::Combo => {
+            let mut y = Synth::new(0.3);
+            y.tone(0.0, 0.06, midi(93), midi(93), Square(0.25), 0.15, 0.002, 0.03, 0.0);
+            y.tone(0.06, 0.2, midi(100), midi(100), Tri, 0.35, 0.002, 0.16, 0.0);
+            y
+        }
+        Sfx::Spin => {
+            let mut y = Synth::new(0.2);
+            y.tone(0.0, 0.18, 300.0, 1000.0, Tri, 0.3, 0.005, 0.08, 0.0);
+            y.tone(0.0, 0.16, 2000.0, 6000.0, Noise, 0.08, 0.02, 0.1, 0.0);
+            y
+        }
+        Sfx::Pound => {
+            let mut y = Synth::new(0.45);
+            y.tone(0.0, 0.35, 170.0, 38.0, Sine, 0.7, 0.001, 0.25, 0.0);
+            y.tone(0.0, 0.28, 1800.0, 250.0, Noise, 0.35, 0.001, 0.22, 0.0);
+            y.tone(0.0, 0.12, 110.0, 55.0, Square(0.5), 0.25, 0.001, 0.08, 0.0);
+            y
+        }
+        Sfx::Break => {
+            let mut y = Synth::new(0.4);
+            y.tone(0.0, 0.32, 2600.0, 500.0, Noise, 0.4, 0.001, 0.25, 0.0);
+            y.tone(0.02, 0.1, 240.0, 120.0, Square(0.5), 0.2, 0.001, 0.06, 0.0);
+            y.tone(0.1, 0.1, 200.0, 90.0, Square(0.5), 0.15, 0.001, 0.06, 0.0);
+            y
+        }
+        Sfx::Charge => {
+            let mut y = Synth::new(0.3);
+            y.tone(0.0, 0.14, 600.0, 1500.0, Tri, 0.3, 0.004, 0.04, 0.0);
+            y.tone(0.12, 0.16, midi(96), midi(96), Square(0.125), 0.12, 0.002, 0.12, 0.0);
+            y.tone(0.12, 0.16, midi(103), midi(103), Tri, 0.2, 0.002, 0.12, 0.0);
+            y
+        }
+        Sfx::SuperJump => {
+            let mut y = Synth::new(0.5);
+            y.tone(0.0, 0.3, 260.0, 1200.0, Square(0.25), 0.3, 0.004, 0.12, 0.0);
+            y.tone(0.0, 0.3, 520.0, 2400.0, Tri, 0.15, 0.004, 0.12, 0.0);
+            for (i, n) in [88, 93, 100].iter().enumerate() {
+                y.tone(0.18 + i as f32 * 0.07, 0.12, midi(*n), midi(*n), Tri, 0.18, 0.002, 0.1, 0.0);
+            }
+            y
+        }
+        Sfx::Clink => {
+            let mut y = Synth::new(0.25);
+            y.tone(0.0, 0.05, 1900.0, 1800.0, Square(0.125), 0.2, 0.001, 0.04, 0.0);
+            y.tone(0.03, 0.18, 2500.0, 2400.0, Tri, 0.25, 0.001, 0.16, 0.0);
+            y
+        }
+        Sfx::Zap => {
+            let mut y = Synth::new(0.6);
+            y.tone(0.0, 0.55, 180.0, 900.0, Square(0.5), 0.12, 0.02, 0.15, 0.12);
+            y.tone(0.0, 0.55, 3000.0, 8000.0, Noise, 0.08, 0.05, 0.2, 0.0);
+            y
+        }
+        Sfx::Thunder => {
+            let mut y = Synth::new(1.2);
+            y.tone(0.0, 0.08, 9000.0, 4000.0, Noise, 0.5, 0.001, 0.05, 0.0);
+            y.tone(0.0, 1.15, 1400.0, 120.0, Noise, 0.6, 0.004, 0.9, 0.0);
+            y.tone(0.0, 0.9, 80.0, 38.0, Sine, 0.6, 0.004, 0.7, 0.0);
+            y
+        }
+        Sfx::BossRoar => {
+            let mut y = Synth::new(0.85);
+            y.tone(0.0, 0.8, 120.0, 70.0, Square(0.5), 0.3, 0.03, 0.4, 0.06);
+            y.tone(0.0, 0.8, 60.0, 40.0, Tri, 0.4, 0.03, 0.4, 0.0);
+            y.tone(0.0, 0.7, 900.0, 300.0, Noise, 0.12, 0.05, 0.4, 0.0);
+            y
+        }
+        Sfx::BossHurt => {
+            let mut y = Synth::new(0.5);
+            y.tone(0.0, 0.4, 1000.0, 180.0, Square(0.25), 0.3, 0.002, 0.2, 0.05);
+            y.tone(0.0, 0.12, 7000.0, 2000.0, Noise, 0.3, 0.001, 0.1, 0.0);
+            y.tone(0.0, 0.2, 200.0, 60.0, Sine, 0.5, 0.001, 0.15, 0.0);
+            y
+        }
+        Sfx::BossDefeat => {
+            let mut y = Synth::new(2.4);
+            y.tone(0.0, 1.0, 3000.0, 100.0, Noise, 0.6, 0.002, 0.8, 0.0);
+            y.tone(0.0, 0.8, 120.0, 30.0, Sine, 0.7, 0.002, 0.6, 0.0);
+            for (i, n) in [72, 76, 79, 84, 88, 91, 96].iter().enumerate() {
+                let t = 0.5 + i as f32 * 0.09;
+                let len = if i == 6 { 0.9 } else { 0.12 };
+                y.tone(t, len, midi(*n), midi(*n), Square(0.25), 0.15, 0.003, len * 0.6, 0.004);
+                y.tone(t, len, midi(*n), midi(*n), Tri, 0.25, 0.003, len * 0.6, 0.0);
+            }
+            y
+        }
     }
 }
 
@@ -271,8 +371,8 @@ struct Song {
     arp: f32,
 }
 
-/// Three original 8-bar loops, one per level.
-const SONGS: [Song; 3] = [
+/// Original 8-bar loops, one per level (the last one is the boss fight).
+const SONGS: [Song; 4] = [
     // Orange Meadow: C - Am - F - G, bright and bouncy
     Song {
         bpm: 140.0,
@@ -329,6 +429,25 @@ const SONGS: [Song; 3] = [
         lead: Wave::Tri,
         bass: 2,
         arp: 0.06,
+    },
+    // Storm boss: Am - Am - F - G - Am - Am - F - E (harmonic minor), fast and driving
+    Song {
+        bpm: 168.0,
+        melody: [
+            &[(69, 1), (72, 1), (76, 2), (75, 1), (76, 1), (72, 2)],
+            &[(69, 1), (72, 1), (76, 1), (81, 1), (80, 2), (76, 2)],
+            &[(77, 2), (76, 1), (74, 1), (72, 2), (69, 2)],
+            &[(71, 1), (74, 1), (79, 2), (77, 1), (74, 1), (71, 2)],
+            &[(81, 2), (79, 1), (77, 1), (76, 2), (72, 2)],
+            &[(74, 1), (76, 1), (77, 1), (79, 1), (81, 2), (84, 2)],
+            &[(83, 2), (81, 1), (77, 1), (76, 2), (72, 2)],
+            &[(71, 2), (68, 2), (64, 2), (0, 2)],
+        ],
+        roots: [[45, 45], [45, 45], [41, 41], [43, 43], [45, 45], [45, 45], [41, 41], [40, 40]],
+        minor: [true, true, false, false, true, true, false, false],
+        lead: Wave::Square(0.25),
+        bass: 0,
+        arp: 0.035,
     },
 ];
 
@@ -400,7 +519,8 @@ impl Audio {
         use Sfx::*;
         let all = [
             Jump, Land, Stomp, Coin, Golden, Shield, ShieldPop, Die, Checkpoint, Crumble, Shoot, Win, Hurt, Heart, Spring, Glide, Throw, NoAmmo,
-            Pop, BoxHit, BoxEmpty, Secret,
+            Pop, BoxHit, BoxEmpty, Secret, Whip, WhipHit, Combo, Spin, Pound, Break, Charge, SuperJump, Clink, Zap, Thunder, BossRoar, BossHurt,
+            BossDefeat,
         ];
         let mut sfx = HashMap::new();
         for s in all {
@@ -426,6 +546,11 @@ impl Audio {
             Sfx::Coin => 0.45,
             Sfx::Glide => 0.45,
             Sfx::Throw => 0.4,
+            Sfx::Whip => 0.45,
+            Sfx::Spin => 0.4,
+            Sfx::Zap => 0.45,
+            Sfx::Combo => 0.5,
+            Sfx::Thunder | Sfx::Pound | Sfx::BossDefeat => 0.75,
             _ => 0.6,
         };
         if let Some(snd) = self.sfx.get(&s) {

@@ -28,6 +28,10 @@ pub enum Tile {
     SlideL,
     /// Signpost 1-9 (text comes from `@signN` lines).
     Sign(u8),
+    /// Cracked cookie floor: solid until you ground-pound it.
+    Cracked,
+    /// Stone pedestal that marks a super-jump spot (plain solid block).
+    Pedestal,
 }
 
 impl Tile {
@@ -41,7 +45,9 @@ impl Tile {
             | Tile::Spring
             | Tile::Fan
             | Tile::BoxOrange
-            | Tile::BoxHeart => Coll::Solid,
+            | Tile::BoxHeart
+            | Tile::Cracked
+            | Tile::Pedestal => Coll::Solid,
             Tile::OneWay => Coll::OneWay,
             Tile::Bumper => Coll::Bumper,
             _ => Coll::Empty,
@@ -65,6 +71,8 @@ pub enum Theme {
     Meadow,
     Factory,
     Sky,
+    /// The boss arena: dark storm clouds (clears up when the boss is beaten).
+    Storm,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -105,6 +113,8 @@ pub struct Level {
     /// Hidden-room group of each fake tile (-1 = not fake).
     pub fake_group: Vec<i32>,
     pub fake_groups: usize,
+    /// Boss arena (`@boss`): the goal only opens once the boss is beaten.
+    pub boss: bool,
 }
 
 impl Level {
@@ -115,6 +125,7 @@ impl Level {
         let mut theme = Theme::Meadow;
         let mut signs = vec![String::new(); 9];
         let mut wind_h = 8;
+        let mut boss = false;
         for line in src.lines() {
             if line.starts_with(';') {
                 continue;
@@ -128,10 +139,12 @@ impl Level {
                         theme = match val {
                             "factory" => Theme::Factory,
                             "sky" => Theme::Sky,
+                            "storm" => Theme::Storm,
                             _ => Theme::Meadow,
                         }
                     }
                     "wind" => wind_h = val.parse().unwrap_or(8),
+                    "boss" => boss = true,
                     k if k.starts_with("sign") => {
                         if let Ok(n) = k[4..].parse::<usize>() {
                             if (1..=9).contains(&n) {
@@ -182,6 +195,7 @@ impl Level {
             wind: vec![false; n],
             fake_group: vec![-1; n],
             fake_groups: 0,
+            boss,
         };
         for y in 0..h {
             let mut x = 0;
@@ -206,6 +220,8 @@ impl Level {
                     '\\' => Tile::SlideR,
                     '/' => Tile::SlideL,
                     '1'..='9' => Tile::Sign(ch as u8 - b'0'),
+                    'B' => Tile::Cracked,
+                    'Y' => Tile::Pedestal,
                     'o' => {
                         spawn(SpawnKind::Orange);
                         Tile::Empty
@@ -343,8 +359,13 @@ impl Level {
     }
 }
 
-/// The three levels, in order.
-pub const LEVELS: [&str; 3] = [include_str!("levels/level1.txt"), include_str!("levels/level2.txt"), include_str!("levels/level3.txt")];
+/// The levels, in order (the last one is the boss fight).
+pub const LEVELS: [&str; 4] = [
+    include_str!("levels/level1.txt"),
+    include_str!("levels/level2.txt"),
+    include_str!("levels/level3.txt"),
+    include_str!("levels/level4.txt"),
+];
 
 #[cfg(test)]
 mod tests {
@@ -354,8 +375,12 @@ mod tests {
     fn parses_levels() {
         for (i, src) in LEVELS.iter().enumerate() {
             let lv = Level::parse(src);
-            assert_eq!(lv.spawns.iter().filter(|s| s.kind == SpawnKind::Golden).count(), 3, "level {}", i + 1);
             assert_eq!(lv.spawns.iter().filter(|s| s.kind == SpawnKind::Goal).count(), 1, "level {}", i + 1);
+            if lv.boss {
+                assert_eq!(i, LEVELS.len() - 1, "the boss is the last level");
+                continue;
+            }
+            assert_eq!(lv.spawns.iter().filter(|s| s.kind == SpawnKind::Golden).count(), 3, "level {}", i + 1);
             assert!(lv.spawns.iter().filter(|s| s.kind == SpawnKind::Checkpoint).count() >= 2, "level {}", i + 1);
             assert!(!lv.tiles.contains(&Tile::SpikeDown), "no ceiling spikes in level {}", i + 1);
             assert!(lv.name != "Level");

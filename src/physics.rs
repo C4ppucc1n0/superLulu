@@ -1,4 +1,5 @@
-//! Platformer physics: tile collision, player movement, jump feel, glide, springs, wind, slides.
+//! Platformer physics: tile collision, player movement, jump feel, glide, super jump, ground pound,
+//! springs, wind, slides.
 //! Pure logic (no rendering) so it can be unit-tested and reused by the level checker.
 
 use macroquad::math::{vec2, Rect, Vec2};
@@ -45,6 +46,16 @@ pub const WIND_ACCEL: f32 = 1800.0;
 /// Slides (45-degree slopes): you always slide downhill.
 pub const SLIDE_MAX: f32 = 330.0;
 pub const SLIDE_ACCEL: f32 = 800.0;
+/// Super jump: crouch (hold down) this long, then jump. About one tile higher than a normal jump.
+pub const SUPER_CHARGE: f32 = 0.4;
+pub const SUPER_JUMP_V: f32 = 640.0;
+/// A full charge is kept this long after letting go of down (W and S share a finger on WASD).
+pub const SUPER_GRACE: f32 = 0.5;
+/// Ground pound: hang in the air for a moment, then slam straight down.
+pub const POUND_WINDUP: f32 = 0.16;
+pub const POUND_V: f32 = 820.0;
+/// Pressing pound on the ground first hops up this fast.
+pub const POUND_HOP: f32 = 330.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Coll {
@@ -83,7 +94,21 @@ pub struct Input {
     pub run: bool,
     pub jump_pressed: bool,
     pub jump_held: bool,
+    /// Down held (crouch / charge a super jump).
+    pub down: bool,
     pub throw_pressed: bool,
+    pub whip_pressed: bool,
+    pub pound_pressed: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Pound {
+    None,
+    /// Little hop before a pound started on the ground.
+    Hop,
+    /// Hanging in the air (time so far).
+    Windup(f32),
+    Slam,
 }
 
 #[derive(Clone, Debug)]
@@ -107,6 +132,13 @@ pub struct Body {
     /// Sliding direction while on a slope (0 = not on a slope).
     pub slope: i8,
     pub in_wind: bool,
+    /// Crouching (down held on the ground) and how long the super jump has charged.
+    pub crouch: bool,
+    pub charge: f32,
+    pub super_grace: f32,
+    /// Rising from a super jump (for the sparkle trail).
+    pub super_jumping: bool,
+    pub pound: Pound,
 }
 
 impl Body {
@@ -125,7 +157,19 @@ impl Body {
             boost: false,
             slope: 0,
             in_wind: false,
+            crouch: false,
+            charge: 0.0,
+            super_grace: 0.0,
+            super_jumping: false,
+            pound: Pound::None,
         }
+    }
+    /// A super jump would fire if jump were pressed now.
+    pub fn super_ready(&self) -> bool {
+        (self.crouch && self.charge >= SUPER_CHARGE) || self.super_grace > 0.0
+    }
+    pub fn pounding(&self) -> bool {
+        matches!(self.pound, Pound::Windup(_) | Pound::Slam)
     }
     pub fn rect(&self) -> Rect {
         Rect::new(self.pos.x, self.pos.y, PW, PH)
@@ -144,6 +188,12 @@ pub struct StepEvents {
     pub bump_tile: Option<(i32, i32)>,
     pub sprung: Option<(i32, i32)>,
     pub glide_start: bool,
+    pub super_jump: bool,
+    /// The super jump just finished charging.
+    pub charged: bool,
+    pub pound_start: bool,
+    /// Landed from a ground pound slam.
+    pub pound_land: bool,
 }
 
 pub fn approach(v: f32, target: f32, amount: f32) -> f32 {
@@ -333,7 +383,30 @@ pub fn step_player(b: &mut Body, inp: &Input, dt: f32, w: &dyn Collider) -> Step
         WALK_MAX
     };
     let (acc, turn) = if b.on_ground { (ACCEL_GROUND, TURN_GROUND) } else { (ACCEL_AIR, TURN_AIR) };
-    if b.slope != 0 {
+    // crouching charges a super jump (you stop, but can still turn around)
+    b.crouch = b.on_ground && inp.down && b.slope == 0 && b.pound == Pound::None;
+    if b.crouch {
+        let was = b.charge;
+        b.charge += dt;
+        ev.charged = was < SUPER_CHARGE && b.charge >= SUPER_CHARGE;
+    } else {
+        if b.charge >= SUPER_CHARGE && b.on_ground {
+            b.super_grace = SUPER_GRACE;
+        }
+        b.charge = 0.0;
+    }
+    if !b.on_ground {
+        b.super_grace = 0.0;
+    }
+    b.super_grace = (b.super_grace - dt).max(0.0);
+    if b.pounding() {
+        b.vel.x = 0.0;
+    } else if b.crouch {
+        if inp.dir != 0.0 {
+            b.facing = inp.dir.signum();
+        }
+        b.vel.x = approach(b.vel.x, 0.0, FRICTION * dt);
+    } else if b.slope != 0 {
         // on a slide you always go downhill; steering only changes how fast
         let s = b.slope as f32;
         let k = if inp.dir * s > 0.0 {
@@ -377,8 +450,14 @@ pub fn step_player(b: &mut Body, inp: &Input, dt: f32, w: &dyn Collider) -> Step
     if !inp.jump_held {
         b.glide_armed = false;
     }
-    if b.jump_buf > 0.0 && b.coyote > 0.0 {
-        b.vel.y = -(JUMP_V + JUMP_RUN_BONUS * (b.vel.x.abs() / RUN_MAX).min(1.0));
+    if b.jump_buf > 0.0 && b.coyote > 0.0 && b.pound == Pound::None {
+        let sup = b.on_ground && b.super_ready();
+        b.vel.y = if sup { -SUPER_JUMP_V } else { -(JUMP_V + JUMP_RUN_BONUS * (b.vel.x.abs() / RUN_MAX).min(1.0)) };
+        b.super_jumping = sup;
+        ev.super_jump = sup;
+        b.crouch = false;
+        b.charge = 0.0;
+        b.super_grace = 0.0;
         b.jumping = true;
         b.on_ground = false;
         b.coyote = 0.0;
@@ -387,6 +466,38 @@ pub fn step_player(b: &mut Body, inp: &Input, dt: f32, w: &dyn Collider) -> Step
         b.slope = 0;
         b.glide_armed = false;
         ev.jumped = true;
+    }
+
+    // --- ground pound ---
+    if inp.pound_pressed && b.pound == Pound::None {
+        if b.on_ground {
+            b.vel.y = -POUND_HOP;
+            b.boost = true; // full little hop whatever the jump button does
+            b.on_ground = false;
+            b.coyote = 0.0;
+            b.jump_buf = 0.0;
+            b.plat = None;
+            b.slope = 0;
+            b.pound = Pound::Hop;
+        } else {
+            b.pound = Pound::Windup(0.0);
+            ev.pound_start = true;
+        }
+        b.crouch = false;
+        b.charge = 0.0;
+        b.super_jumping = false;
+    }
+    if b.pound == Pound::Hop && b.vel.y >= -40.0 {
+        b.pound = Pound::Windup(0.0);
+        ev.pound_start = true;
+    }
+    if b.pounding() {
+        b.glide_armed = false;
+        b.boost = false;
+        b.jumping = false;
+    }
+    if b.super_jumping && b.vel.y >= 0.0 {
+        b.super_jumping = false;
     }
 
     // --- gliding ---
@@ -400,7 +511,14 @@ pub fn step_player(b: &mut Body, inp: &Input, dt: f32, w: &dyn Collider) -> Step
     if b.boost && b.vel.y >= 0.0 {
         b.boost = false;
     }
-    if b.gliding || (b.glide_armed && b.in_wind) {
+    let mut max_fall = MAX_FALL;
+    if let Pound::Windup(t) = b.pound {
+        b.vel = Vec2::ZERO;
+        b.pound = if t + dt >= POUND_WINDUP { Pound::Slam } else { Pound::Windup(t + dt) };
+    } else if b.pound == Pound::Slam {
+        b.vel.y = POUND_V;
+        max_fall = POUND_V;
+    } else if b.gliding || (b.glide_armed && b.in_wind) {
         if b.in_wind {
             b.vel.y = approach(b.vel.y, -WIND_RISE, WIND_ACCEL * dt);
             b.gliding = true;
@@ -422,7 +540,7 @@ pub fn step_player(b: &mut Body, inp: &Input, dt: f32, w: &dyn Collider) -> Step
             b.vel.y -= WIND_LIFT * dt;
         }
     }
-    b.vel.y = b.vel.y.min(MAX_FALL);
+    b.vel.y = b.vel.y.min(max_fall);
 
     // --- move & collide ---
     let size = vec2(PW, PH);
@@ -438,6 +556,11 @@ pub fn step_player(b: &mut Body, inp: &Input, dt: f32, w: &dyn Collider) -> Step
         b.boost = false;
         b.gliding = false;
         b.glide_armed = false;
+        b.super_jumping = false;
+        if b.pound == Pound::Slam {
+            ev.pound_land = true;
+        }
+        b.pound = Pound::None;
         b.vel.y = 0.0;
         b.plat = if slope != 0 { None } else { hit.plat };
         b.slope = slope;
@@ -451,6 +574,7 @@ pub fn step_player(b: &mut Body, inp: &Input, dt: f32, w: &dyn Collider) -> Step
         b.vel.y = 0.0;
         b.jumping = false;
         b.boost = false;
+        b.super_jumping = false;
         ev.bumped = true;
         ev.bump_tile = hit.tile;
     }
@@ -537,5 +661,57 @@ pub mod tests {
         }
         let (_, d, _) = jump(true, RUN_MAX, true);
         assert!(d > 8.0, "gliding should cross wide gaps");
+        let h = super_jump();
+        println!("super jump: height {h:.2} tiles");
+        assert!(h > 4.3 && h < 5.0, "super jump is about a tile higher than a normal jump ({h:.2})");
+    }
+
+    /// Crouch for 0.5 s, let go of down, then jump (inside the grace time). Returns the height in tiles.
+    fn super_jump() -> f32 {
+        let dt = 1.0 / 120.0;
+        let mut b = Body::new(vec2(0.0, 10.0 * TILE - PH - 1.0));
+        settle(&mut b, &Flat);
+        let y0 = b.pos.y;
+        let mut min_y = y0;
+        let mut jumped = false;
+        for i in 0..400 {
+            let inp = Input { down: i < 60, jump_pressed: i == 70, jump_held: i >= 70, ..Default::default() };
+            jumped |= step_player(&mut b, &inp, dt, &Flat).super_jump;
+            min_y = min_y.min(b.pos.y);
+            if b.on_ground && i > 75 {
+                break;
+            }
+        }
+        assert!(jumped, "the charge is kept for a moment after letting go of down");
+        (y0 - min_y) / TILE
+    }
+
+    #[test]
+    fn ground_pound_slams_down() {
+        let dt = 1.0 / 120.0;
+        let mut b = Body::new(vec2(0.0, 2.0 * TILE));
+        let mut landed = false;
+        let mut hung = 0;
+        for i in 0..200 {
+            let ev = step_player(&mut b, &Input { pound_pressed: i == 0, ..Default::default() }, dt, &Flat);
+            if matches!(b.pound, Pound::Windup(_)) {
+                hung += 1;
+            }
+            if ev.pound_land {
+                landed = true;
+                break;
+            }
+        }
+        assert!(landed && b.on_ground);
+        assert!(hung >= 15, "hangs in the air before slamming ({hung} steps)");
+        // from the ground: hop first, then pound
+        let mut events = vec![];
+        for i in 0..200 {
+            let ev = step_player(&mut b, &Input { pound_pressed: i == 0, ..Default::default() }, dt, &Flat);
+            if ev.pound_land {
+                events.push(i);
+            }
+        }
+        assert_eq!(events.len(), 1, "a pound on the ground hops and then slams");
     }
 }

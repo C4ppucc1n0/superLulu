@@ -5,6 +5,9 @@
 //! and moving platforms are replaced by one-way tiles along their whole path (optimistic).
 //! Any spike touch or fall into a pit discards that jump, so the found routes never need
 //! to take damage. Jumps include gliding, springs, updrafts and slides.
+//!
+//! The goal and checkpoints must be reachable with plain moves (no super jump, cracked floors
+//! intact). Items may also need the super jump, or a cracked floor pounded open.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -18,10 +21,15 @@ struct Static<'a> {
     lv: &'a Level,
     /// Cells covered by a moving platform's path (treated as one-way floors).
     extra: Vec<bool>,
+    /// Cracked floors already pounded open.
+    open_cracked: bool,
 }
 
 impl Collider for Static<'_> {
     fn coll(&self, tx: i32, ty: i32) -> Coll {
+        if self.open_cracked && self.lv.tile(tx, ty) == Tile::Cracked {
+            return Coll::Empty;
+        }
         let on_path = self.lv.idx(tx, ty).is_some_and(|i| self.extra[i]);
         match self.lv.tile(tx, ty).coll() {
             Coll::Empty | Coll::Bumper if on_path => Coll::OneWay,
@@ -44,7 +52,7 @@ fn blocked(lv: &Level, tx: i32, ty: i32) -> bool {
     lv.tile(tx, ty) == Tile::Bumper || lv.tile(tx, ty).coll() == Coll::Solid
 }
 
-fn build(lv: &Level) -> Static<'_> {
+fn build(lv: &Level, open_cracked: bool) -> Static<'_> {
     let mut extra = vec![false; lv.tiles.len()];
     let mut mark = |x: i32, y: i32| {
         if let Some(i) = lv.idx(x, y) {
@@ -85,7 +93,7 @@ fn build(lv: &Level) -> Static<'_> {
             _ => {}
         }
     }
-    Static { lv, extra }
+    Static { lv, extra, open_cracked }
 }
 
 /// A horizontal run of tiles the player can stand on.
@@ -135,27 +143,50 @@ struct Plan {
     /// Press jump again at this time (glide) and hold until `glide_until`.
     glide_at: f32,
     glide_until: f32,
+    /// Crouch this long first (super jump); all the times above start after it.
+    charge: f32,
 }
 
 impl Plan {
     fn input(&self, t: f32, dir: f32, run: bool, dt: f32) -> Input {
+        if t < self.charge {
+            return Input { down: true, ..Default::default() };
+        }
+        let t = t - self.charge;
         let steer = (t >= self.d0 && t < self.d1) || t >= self.d2;
         let glide_press = self.glide_at >= 0.0 && t >= self.glide_at && t < self.glide_at + dt;
         let glide_hold = self.glide_at >= 0.0 && t >= self.glide_at && t < self.glide_until;
         Input {
             dir: if steer { dir } else { 0.0 },
             run,
-            jump_pressed: (self.jump && t < dt * 0.5) || glide_press,
+            // the first step after the charge (t is a sum of steps, so allow for rounding)
+            jump_pressed: (self.jump && t >= 0.0 && t < dt * 0.99) || glide_press,
             jump_held: (self.jump && t < self.hold) || glide_hold,
-            throw_pressed: false,
+            ..Default::default()
         }
     }
 }
 
-fn plans() -> Vec<Plan> {
-    const NEVER: f32 = 99.0;
-    let base = Plan { d0: 0.0, d1: NEVER, d2: NEVER, jump: false, hold: 0.0, glide_at: -1.0, glide_until: 0.0 };
+const NEVER: f32 = 99.0;
+const BASE: Plan = Plan { d0: 0.0, d1: NEVER, d2: NEVER, jump: false, hold: 0.0, glide_at: -1.0, glide_until: 0.0, charge: 0.0 };
+
+/// Super jumps from standing still: charge, then jump straight up or sideways (and maybe glide).
+/// (The charge ends mid-step so the jump press lands on exactly one step.)
+fn super_plans() -> Vec<Plan> {
     let mut v = vec![];
+    for hold in [0.16, NEVER] {
+        for d1 in [0.0, 0.12, 0.3, NEVER] {
+            v.push(Plan { d1, jump: true, hold, charge: 0.455, ..BASE });
+        }
+    }
+    v.push(Plan { d0: 0.3, jump: true, hold: NEVER, charge: 0.455, ..BASE });
+    v.push(Plan { jump: true, hold: 0.45, glide_at: 0.5, glide_until: NEVER, charge: 0.455, ..BASE });
+    v
+}
+
+fn plans() -> Vec<Plan> {
+    let base = BASE;
+    let mut v: Vec<Plan> = vec![];
     // walk off a ledge (optionally gliding)
     for d1 in [0.12, 0.3, NEVER] {
         v.push(Plan { d1, ..base });
@@ -187,8 +218,9 @@ struct Found {
     oranges: HashSet<(i32, i32)>,
 }
 
-fn explore(lv: &Level, start: (i32, i32)) -> (Found, usize, usize) {
-    let w = build(lv);
+/// Breadth-first search over standing surfaces. `extra` = may also super jump and pound open cracked floors.
+fn explore(lv: &Level, start: (i32, i32), extra: bool) -> (Found, usize, usize) {
+    let w = build(lv, extra);
     let (surf, map) = surfaces(&w);
     let goldens: Vec<(i32, i32)> = lv.spawns.iter().filter(|s| s.kind == SpawnKind::Golden).map(|s| (s.tx, s.ty)).collect();
     let oranges: Vec<(i32, i32)> = lv.spawns.iter().filter(|s| s.kind == SpawnKind::Orange).map(|s| (s.tx, s.ty)).collect();
@@ -205,6 +237,7 @@ fn explore(lv: &Level, start: (i32, i32)) -> (Found, usize, usize) {
         Rect::new(c.x - r, c.y - r, 2.0 * r, 2.0 * r)
     };
     let plans = plans();
+    let supers = if extra { super_plans() } else { vec![] };
 
     let mut found = Found::default();
     let first = *map.get(&(start.0, start.1 + 1)).unwrap_or_else(|| panic!("start {start:?} must stand on something"));
@@ -224,75 +257,85 @@ fn explore(lv: &Level, start: (i32, i32)) -> (Found, usize, usize) {
             xs.push((c + 1) as f32 * TILE - PW);
         }
         let speeds: &[f32] = if len >= 2 { &[0.0, WALK_MAX, RUN_MAX] } else { &[0.0, WALK_MAX] };
+        let mut tries: Vec<(f32, f32, f32, &Plan)> = vec![];
         for &x in &xs {
             for &dir in &[-1.0f32, 1.0] {
                 for &v in speeds {
                     for plan in &plans {
-                        sims += 1;
-                        let mut b = Body::new(vec2(x, top - PH));
-                        b.on_ground = true;
-                        b.vel.x = v * dir;
-                        let run = v > WALK_MAX;
-                        let mut t = 0.0;
-                        let mut ok = true;
-                        loop {
-                            let inp = plan.input(t, dir, run, dt);
-                            step_player(&mut b, &inp, dt, &w);
-                            t += dt;
-                            let pr = b.rect();
-                            let hr = hurt_rect(&b);
-                            let (c0, c1) = ((hr.x / TILE).floor() as i32, ((hr.x + hr.w) / TILE).floor() as i32);
-                            let (r0, r1) = ((hr.y / TILE).floor() as i32, ((hr.y + hr.h) / TILE).floor() as i32);
-                            'spikes: for ty in r0..=r1 {
-                                for tx in c0..=c1 {
-                                    if let Some(sr) = spike_rect(lv.tile(tx, ty), tx, ty) {
-                                        if sr.overlaps(&hr) {
-                                            ok = false;
-                                            break 'spikes;
-                                        }
-                                    }
-                                }
-                            }
-                            if !ok || b.pos.y > lv.h as f32 * TILE + 40.0 || t > 5.0 {
+                        tries.push((x, dir, v, plan));
+                    }
+                }
+                // super jumps start from standing on the surface
+                if x >= s.c0 as f32 * TILE && x + PW <= (s.c1 + 1) as f32 * TILE {
+                    for plan in &supers {
+                        tries.push((x, dir, 0.0, plan));
+                    }
+                }
+            }
+        }
+        for (x, dir, v, plan) in tries {
+            sims += 1;
+            let mut b = Body::new(vec2(x, top - PH));
+            b.on_ground = true;
+            b.vel.x = v * dir;
+            let run = v > WALK_MAX;
+            let mut t = 0.0;
+            let mut ok = true;
+            loop {
+                let inp = plan.input(t, dir, run, dt);
+                step_player(&mut b, &inp, dt, &w);
+                t += dt;
+                let pr = b.rect();
+                let hr = hurt_rect(&b);
+                let (c0, c1) = ((hr.x / TILE).floor() as i32, ((hr.x + hr.w) / TILE).floor() as i32);
+                let (r0, r1) = ((hr.y / TILE).floor() as i32, ((hr.y + hr.h) / TILE).floor() as i32);
+                'spikes: for ty in r0..=r1 {
+                    for tx in c0..=c1 {
+                        if let Some(sr) = spike_rect(lv.tile(tx, ty), tx, ty) {
+                            if sr.overlaps(&hr) {
                                 ok = false;
-                                break;
-                            }
-                            if pr.overlaps(&goal_r) {
-                                found.goal = true;
-                            }
-                            for (i, c) in cps.iter().enumerate() {
-                                if c.overlaps(&pr) {
-                                    found.checkpoints.insert(i);
-                                }
-                            }
-                            for g in &goldens {
-                                if item_rect(*g, 12.0).overlaps(&pr) {
-                                    found.goldens.insert(*g);
-                                }
-                            }
-                            for o in &oranges {
-                                if item_rect(*o, 9.0).overlaps(&pr) {
-                                    found.oranges.insert(*o);
-                                }
-                            }
-                            if b.on_ground && b.slope == 0 && t > 0.02 {
-                                break;
+                                break 'spikes;
                             }
                         }
-                        if !ok {
-                            continue;
-                        }
-                        let row = ((b.pos.y + PH) / TILE).round() as i32;
-                        let cl = (b.pos.x / TILE).floor() as i32;
-                        let cr = ((b.pos.x + PW - 0.01) / TILE).floor() as i32;
-                        for c in [cl, cr] {
-                            if let Some(&ni) = map.get(&(c, row)) {
-                                if !seen[ni] {
-                                    seen[ni] = true;
-                                    q.push_back(ni);
-                                }
-                            }
-                        }
+                    }
+                }
+                if !ok || b.pos.y > lv.h as f32 * TILE + 40.0 || t > 5.0 + plan.charge {
+                    ok = false;
+                    break;
+                }
+                if pr.overlaps(&goal_r) {
+                    found.goal = true;
+                }
+                for (i, c) in cps.iter().enumerate() {
+                    if c.overlaps(&pr) {
+                        found.checkpoints.insert(i);
+                    }
+                }
+                for g in &goldens {
+                    if item_rect(*g, 12.0).overlaps(&pr) {
+                        found.goldens.insert(*g);
+                    }
+                }
+                for o in &oranges {
+                    if item_rect(*o, 9.0).overlaps(&pr) {
+                        found.oranges.insert(*o);
+                    }
+                }
+                    if b.on_ground && b.slope == 0 && t > plan.charge + 0.02 {
+                    break;
+                }
+            }
+            if !ok {
+                continue;
+            }
+            let row = ((b.pos.y + PH) / TILE).round() as i32;
+            let cl = (b.pos.x / TILE).floor() as i32;
+            let cr = ((b.pos.x + PW - 0.01) / TILE).floor() as i32;
+            for c in [cl, cr] {
+                if let Some(&ni) = map.get(&(c, row)) {
+                    if !seen[ni] {
+                        seen[ni] = true;
+                        q.push_back(ni);
                     }
                 }
             }
@@ -304,8 +347,16 @@ fn explore(lv: &Level, start: (i32, i32)) -> (Found, usize, usize) {
 
 fn check_level(n: usize) {
     let lv = Level::parse(LEVELS[n - 1]);
-    let (found, visited, sims) = explore(&lv, lv.start);
+    let (found, visited, sims) = explore(&lv, lv.start, false);
     println!("level {n} ({}): visited {visited} surfaces with {sims} simulated jumps", lv.name);
+    let (more, visited, sims) = explore(&lv, lv.start, true);
+    println!("  with super jump + pound: visited {visited} surfaces with {sims} simulated jumps");
+    let mut extra_only: Vec<_> = more.oranges.difference(&found.oranges).copied().collect();
+    extra_only.sort_unstable();
+    println!("  oranges that need a super jump or a ground pound: {extra_only:?}");
+    let mut found = found;
+    found.oranges.extend(more.oranges);
+    found.goldens.extend(more.goldens);
     let total_oranges = lv.spawns.iter().filter(|s| s.kind == SpawnKind::Orange).count();
     let missing: Vec<_> = lv
         .spawns
@@ -334,7 +385,7 @@ fn check_level(n: usize) {
         problems.push(format!("oranges unreachable: {missing:?}"));
     }
     for cp in &cps {
-        let (f, v, _) = explore(&lv, *cp);
+        let (f, v, _) = explore(&lv, *cp, false);
         println!("  from checkpoint {cp:?}: visited {v} surfaces, goal {}", f.goal);
         if !f.goal {
             problems.push(format!("goal not reachable from checkpoint {cp:?}"));
@@ -356,4 +407,9 @@ fn level2_is_beatable() {
 #[test]
 fn level3_is_beatable() {
     check_level(3);
+}
+
+#[test]
+fn level4_is_beatable() {
+    check_level(4);
 }
