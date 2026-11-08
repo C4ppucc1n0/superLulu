@@ -1,4 +1,4 @@
-//! Platformer physics: tile collision, player movement, jump feel.
+//! Platformer physics: tile collision, player movement, jump feel, glide, springs, wind, slides.
 //! Pure logic (no rendering) so it can be unit-tested and reused by the level checker.
 
 use macroquad::math::{vec2, Rect, Vec2};
@@ -26,11 +26,25 @@ pub const G_FALL: f32 = 2300.0;
 pub const MAX_FALL: f32 = 640.0;
 
 /// Grace time to still jump after walking off a ledge.
-pub const COYOTE: f32 = 0.085;
+pub const COYOTE: f32 = 0.12;
 /// A jump pressed this long before landing still fires on landing.
-pub const JUMP_BUFFER: f32 = 0.11;
+pub const JUMP_BUFFER: f32 = 0.15;
 pub const STOMP_BOUNCE: f32 = 480.0;
 pub const STOMP_BOUNCE_HELD: f32 = 560.0;
+
+/// Glide (orange propeller): press jump again in the air and hold.
+pub const GLIDE_FALL: f32 = 75.0;
+pub const GLIDE_DECEL: f32 = 2400.0;
+pub const GLIDE_MAX_X: f32 = 190.0;
+/// Jelly spring launch speed (~6 tiles high).
+pub const SPRING_V: f32 = 740.0;
+/// Updraft above fans: gliders rise, everyone else just gets lighter.
+pub const WIND_LIFT: f32 = 600.0;
+pub const WIND_RISE: f32 = 200.0;
+pub const WIND_ACCEL: f32 = 1800.0;
+/// Slides (45-degree slopes): you always slide downhill.
+pub const SLIDE_MAX: f32 = 330.0;
+pub const SLIDE_ACCEL: f32 = 800.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Coll {
@@ -42,10 +56,25 @@ pub enum Coll {
     Bumper,
 }
 
+/// Special surface behaviour of a tile.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Fx {
+    None,
+    Spring,
+    /// Slide; the value is the direction you slide (+1 = down to the right, -1 = down to the left).
+    Slope(i8),
+}
+
 pub trait Collider {
     fn coll(&self, tx: i32, ty: i32) -> Coll;
     /// One-way moving platforms (top surface only).
     fn plats(&self) -> &[Rect];
+    fn fx(&self, _tx: i32, _ty: i32) -> Fx {
+        Fx::None
+    }
+    fn wind(&self, _tx: i32, _ty: i32) -> bool {
+        false
+    }
 }
 
 #[derive(Clone, Copy, Default, Debug)]
@@ -54,6 +83,7 @@ pub struct Input {
     pub run: bool,
     pub jump_pressed: bool,
     pub jump_held: bool,
+    pub throw_pressed: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -69,11 +99,33 @@ pub struct Body {
     /// Index of the moving platform we stand on.
     pub plat: Option<usize>,
     pub facing: f32,
+    /// Jump was pressed again in the air and is still held.
+    pub glide_armed: bool,
+    pub gliding: bool,
+    /// Launched by a spring: full-height rise regardless of the jump button.
+    pub boost: bool,
+    /// Sliding direction while on a slope (0 = not on a slope).
+    pub slope: i8,
+    pub in_wind: bool,
 }
 
 impl Body {
     pub fn new(pos: Vec2) -> Self {
-        Body { pos, vel: Vec2::ZERO, on_ground: false, coyote: 0.0, jump_buf: 0.0, jumping: false, plat: None, facing: 1.0 }
+        Body {
+            pos,
+            vel: Vec2::ZERO,
+            on_ground: false,
+            coyote: 0.0,
+            jump_buf: 0.0,
+            jumping: false,
+            plat: None,
+            facing: 1.0,
+            glide_armed: false,
+            gliding: false,
+            boost: false,
+            slope: 0,
+            in_wind: false,
+        }
     }
     pub fn rect(&self) -> Rect {
         Rect::new(self.pos.x, self.pos.y, PW, PH)
@@ -88,6 +140,10 @@ pub struct StepEvents {
     pub jumped: bool,
     pub landed: bool,
     pub bumped: bool,
+    /// Tile hit with the head (cookie boxes react to this).
+    pub bump_tile: Option<(i32, i32)>,
+    pub sprung: Option<(i32, i32)>,
+    pub glide_start: bool,
 }
 
 pub fn approach(v: f32, target: f32, amount: f32) -> f32 {
@@ -115,10 +171,10 @@ pub fn overlaps_solid(r: Rect, w: &dyn Collider) -> bool {
     false
 }
 
-/// Move horizontally, stopping at solid tiles. Returns true if blocked.
-pub fn sweep_x(pos: &mut Vec2, size: Vec2, dx: f32, w: &dyn Collider, bumper_blocks: bool) -> bool {
+/// Move horizontally, stopping at solid tiles. Returns the blocking tile, if any.
+pub fn sweep_x(pos: &mut Vec2, size: Vec2, dx: f32, w: &dyn Collider, bumper_blocks: bool) -> Option<(i32, i32)> {
     if dx == 0.0 {
-        return false;
+        return None;
     }
     let blocks = |c: Coll| c == Coll::Solid || (bumper_blocks && c == Coll::Bumper);
     let (r0, r1) = tile_range(pos.y, pos.y + size.y);
@@ -130,7 +186,7 @@ pub fn sweep_x(pos: &mut Vec2, size: Vec2, dx: f32, w: &dyn Collider, bumper_blo
             for r in r0..=r1 {
                 if blocks(w.coll(c, r)) {
                     pos.x = c as f32 * TILE - size.x;
-                    return true;
+                    return Some((c, r));
                 }
             }
         }
@@ -141,13 +197,13 @@ pub fn sweep_x(pos: &mut Vec2, size: Vec2, dx: f32, w: &dyn Collider, bumper_blo
             for r in r0..=r1 {
                 if blocks(w.coll(c, r)) {
                     pos.x = (c + 1) as f32 * TILE;
-                    return true;
+                    return Some((c, r));
                 }
             }
         }
     }
     pos.x = nx;
-    false
+    None
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -155,6 +211,8 @@ pub struct YHit {
     pub landed: bool,
     pub plat: Option<usize>,
     pub bumped: bool,
+    /// Tile we landed on / bumped into.
+    pub tile: Option<(i32, i32)>,
 }
 
 /// Move vertically. Lands on solid tiles, one-way tiles and (optionally) moving platforms.
@@ -165,7 +223,7 @@ pub fn sweep_y(pos: &mut Vec2, size: Vec2, dy: f32, w: &dyn Collider, use_plats:
     if dy > 0.0 {
         let old_b = pos.y + size.y;
         let new_b = old_b + dy;
-        let mut land: Option<(f32, Option<usize>)> = None;
+        let mut land: Option<(f32, Option<usize>, Option<(i32, i32)>)> = None;
         let r0 = (old_b / TILE).floor() as i32;
         let r1 = ((new_b - 0.001) / TILE).floor() as i32;
         'rows: for r in r0..=r1 {
@@ -175,7 +233,7 @@ pub fn sweep_y(pos: &mut Vec2, size: Vec2, dy: f32, w: &dyn Collider, use_plats:
             }
             for c in c0..=c1 {
                 if matches!(w.coll(c, r), Coll::Solid | Coll::OneWay) {
-                    land = Some((top, None));
+                    land = Some((top, None, Some((c, r))));
                     break 'rows;
                 }
             }
@@ -183,16 +241,17 @@ pub fn sweep_y(pos: &mut Vec2, size: Vec2, dy: f32, w: &dyn Collider, use_plats:
         if use_plats {
             for (i, p) in w.plats().iter().enumerate() {
                 if pos.x + size.x > p.x && pos.x < p.x + p.w && p.y >= old_b - 2.5 && p.y <= new_b {
-                    if land.map_or(true, |(t, _)| p.y < t) {
-                        land = Some((p.y, Some(i)));
+                    if land.map_or(true, |(t, _, _)| p.y < t) {
+                        land = Some((p.y, Some(i), None));
                     }
                 }
             }
         }
-        if let Some((top, pi)) = land {
+        if let Some((top, pi, tile)) = land {
             pos.y = top - size.y;
             hit.landed = true;
             hit.plat = pi;
+            hit.tile = tile;
         } else {
             pos.y = new_b - size.y;
         }
@@ -218,6 +277,7 @@ pub fn sweep_y(pos: &mut Vec2, size: Vec2, dy: f32, w: &dyn Collider, use_plats:
                     }
                     pos.y = (r + 1) as f32 * TILE;
                     hit.bumped = true;
+                    hit.tile = Some((c, r));
                     return hit;
                 }
             }
@@ -227,14 +287,65 @@ pub fn sweep_y(pos: &mut Vec2, size: Vec2, dy: f32, w: &dyn Collider, use_plats:
     hit
 }
 
+/// Surface height of a slope tile at world x (45 degrees).
+pub fn slope_surface(dir: i8, tx: i32, ty: i32, x: f32) -> f32 {
+    let lx = (x - tx as f32 * TILE).clamp(0.0, TILE);
+    if dir > 0 {
+        ty as f32 * TILE + lx // '\' : high on the left, slides right
+    } else {
+        (ty + 1) as f32 * TILE - lx // '/' : high on the right, slides left
+    }
+}
+
+/// Keep the body glued to slide tiles. Returns the slide direction if standing on one.
+/// `sticky` (we were on the ground last step) lets the body follow the slope down instead of launching off it.
+fn snap_to_slope(b: &mut Body, w: &dyn Collider, sticky: bool) -> i8 {
+    if b.vel.y < 0.0 {
+        return 0;
+    }
+    let cx = b.pos.x + PW / 2.0;
+    let feet = b.pos.y + PH;
+    let tx = (cx / TILE).floor() as i32;
+    let ty0 = ((feet - 0.01) / TILE).floor() as i32;
+    let tol = if sticky { 12.0 } else { 0.5 };
+    for ty in [ty0, ty0 + 1] {
+        if let Fx::Slope(dir) = w.fx(tx, ty) {
+            let surf = slope_surface(dir, tx, ty, cx);
+            if feet >= surf - tol && feet <= surf + TILE {
+                b.pos.y = surf - PH;
+                return dir;
+            }
+        }
+    }
+    0
+}
+
 /// One fixed-timestep update of the player body.
 pub fn step_player(b: &mut Body, inp: &Input, dt: f32, w: &dyn Collider) -> StepEvents {
     let mut ev = StepEvents::default();
 
     // --- horizontal ---
-    let max = if inp.run { RUN_MAX } else { WALK_MAX };
+    let max = if b.gliding {
+        GLIDE_MAX_X
+    } else if inp.run {
+        RUN_MAX
+    } else {
+        WALK_MAX
+    };
     let (acc, turn) = if b.on_ground { (ACCEL_GROUND, TURN_GROUND) } else { (ACCEL_AIR, TURN_AIR) };
-    if inp.dir != 0.0 {
+    if b.slope != 0 {
+        // on a slide you always go downhill; steering only changes how fast
+        let s = b.slope as f32;
+        let k = if inp.dir * s > 0.0 {
+            1.15
+        } else if inp.dir * s < 0.0 {
+            0.6
+        } else {
+            1.0
+        };
+        b.vel.x = approach(b.vel.x, s * SLIDE_MAX * k, SLIDE_ACCEL * dt);
+        b.facing = s;
+    } else if inp.dir != 0.0 {
         b.facing = inp.dir.signum();
         if b.vel.x * inp.dir < 0.0 {
             b.vel.x = approach(b.vel.x, 0.0, turn * dt);
@@ -257,8 +368,14 @@ pub fn step_player(b: &mut Body, inp: &Input, dt: f32, w: &dyn Collider) -> Step
     }
     if inp.jump_pressed {
         b.jump_buf = JUMP_BUFFER;
+        if !b.on_ground && b.coyote <= 0.0 {
+            b.glide_armed = true;
+        }
     } else {
         b.jump_buf -= dt;
+    }
+    if !inp.jump_held {
+        b.glide_armed = false;
     }
     if b.jump_buf > 0.0 && b.coyote > 0.0 {
         b.vel.y = -(JUMP_V + JUMP_RUN_BONUS * (b.vel.x.abs() / RUN_MAX).min(1.0));
@@ -267,42 +384,90 @@ pub fn step_player(b: &mut Body, inp: &Input, dt: f32, w: &dyn Collider) -> Step
         b.coyote = 0.0;
         b.jump_buf = 0.0;
         b.plat = None;
+        b.slope = 0;
+        b.glide_armed = false;
         ev.jumped = true;
     }
 
-    // --- gravity (variable jump height) ---
-    let g = if b.vel.y < 0.0 {
-        if b.jumping && inp.jump_held {
-            G_HOLD
+    // --- gliding ---
+    let was_gliding = b.gliding;
+    b.gliding = b.glide_armed && !b.on_ground && b.vel.y >= 0.0;
+    ev.glide_start = b.gliding && !was_gliding;
+
+    // --- gravity / glide / wind ---
+    let c = b.center();
+    b.in_wind = w.wind((c.x / TILE).floor() as i32, (c.y / TILE).floor() as i32);
+    if b.boost && b.vel.y >= 0.0 {
+        b.boost = false;
+    }
+    if b.gliding || (b.glide_armed && b.in_wind) {
+        if b.in_wind {
+            b.vel.y = approach(b.vel.y, -WIND_RISE, WIND_ACCEL * dt);
+            b.gliding = true;
         } else {
-            G_CUT
+            b.vel.y = approach(b.vel.y, GLIDE_FALL, GLIDE_DECEL * dt);
         }
     } else {
-        G_FALL
-    };
-    b.vel.y = (b.vel.y + g * dt).min(MAX_FALL);
+        let g = if b.vel.y < 0.0 {
+            if (b.jumping && inp.jump_held) || b.boost {
+                G_HOLD
+            } else {
+                G_CUT
+            }
+        } else {
+            G_FALL
+        };
+        b.vel.y += g * dt;
+        if b.in_wind {
+            b.vel.y -= WIND_LIFT * dt;
+        }
+    }
+    b.vel.y = b.vel.y.min(MAX_FALL);
 
     // --- move & collide ---
     let size = vec2(PW, PH);
-    if sweep_x(&mut b.pos, size, b.vel.x * dt, w, false) {
+    if sweep_x(&mut b.pos, size, b.vel.x * dt, w, false).is_some() {
         b.vel.x = 0.0;
     }
     let was_ground = b.on_ground;
     let hit = sweep_y(&mut b.pos, size, b.vel.y * dt, w, true, true);
-    if hit.landed {
+    let slope = snap_to_slope(b, w, was_ground);
+    if hit.landed || slope != 0 {
         b.on_ground = true;
         b.jumping = false;
+        b.boost = false;
+        b.gliding = false;
+        b.glide_armed = false;
         b.vel.y = 0.0;
-        b.plat = hit.plat;
+        b.plat = if slope != 0 { None } else { hit.plat };
+        b.slope = slope;
         ev.landed = !was_ground;
     } else {
         b.on_ground = false;
         b.plat = None;
+        b.slope = 0;
     }
     if hit.bumped {
         b.vel.y = 0.0;
         b.jumping = false;
+        b.boost = false;
         ev.bumped = true;
+        ev.bump_tile = hit.tile;
+    }
+
+    // --- springs ---
+    if b.on_ground && b.slope == 0 && b.plat.is_none() {
+        let row = ((b.pos.y + PH + 0.5) / TILE).floor() as i32;
+        let (c0, c1) = tile_range(b.pos.x, b.pos.x + PW);
+        if let Some(c) = (c0..=c1).find(|&c| w.fx(c, row) == Fx::Spring) {
+            b.vel.y = -SPRING_V;
+            b.jumping = true;
+            b.boost = true;
+            b.on_ground = false;
+            b.coyote = 0.0;
+            ev.sprung = Some((c, row));
+            ev.landed = false;
+        }
     }
     ev
 }
@@ -333,48 +498,44 @@ pub mod tests {
         assert!(b.on_ground);
     }
 
-    /// Prints the jump envelope used to design the level.
-    #[test]
-    fn jump_capabilities() {
+    fn jump(run: bool, vx: f32, glide: bool) -> (f32, f32, f32) {
         let dt = 1.0 / 120.0;
-        for (name, run, vx) in [("standing", false, 0.0), ("walk", false, WALK_MAX), ("run", true, RUN_MAX)] {
-            let mut b = Body::new(vec2(0.0, 10.0 * TILE - PH - 1.0));
-            settle(&mut b, &Flat);
-            b.vel.x = vx;
-            let y0 = b.pos.y;
-            let x0 = b.pos.x;
-            let mut min_y = y0;
-            let mut t = 0.0;
-            let mut first = true;
-            loop {
-                let inp = Input { dir: if vx > 0.0 { 1.0 } else { 0.0 }, run, jump_pressed: first, jump_held: true };
-                first = false;
-                step_player(&mut b, &inp, dt, &Flat);
-                t += dt;
-                min_y = min_y.min(b.pos.y);
-                if b.on_ground && t > 0.05 {
-                    break;
-                }
-            }
-            println!(
-                "{name:9}: height {:.1}px ({:.2} tiles)  distance {:.1}px ({:.2} tiles)  airtime {:.2}s",
-                y0 - min_y,
-                (y0 - min_y) / TILE,
-                b.pos.x - x0,
-                (b.pos.x - x0) / TILE,
-                t
-            );
-        }
-        // short hop
         let mut b = Body::new(vec2(0.0, 10.0 * TILE - PH - 1.0));
         settle(&mut b, &Flat);
-        let y0 = b.pos.y;
+        b.vel.x = vx;
+        let (y0, x0) = (b.pos.y, b.pos.x);
         let mut min_y = y0;
-        for i in 0..120 {
-            let inp = Input { jump_pressed: i == 0, jump_held: i < 2, ..Default::default() };
+        let mut t = 0.0;
+        let mut i = 0;
+        loop {
+            // glide: release after 0.4s, press again and hold
+            let press_again = glide && i == 50;
+            let held = if glide { i < 48 || i >= 50 } else { true };
+            let inp = Input { dir: if vx > 0.0 { 1.0 } else { 0.0 }, run, jump_pressed: i == 0 || press_again, jump_held: held, ..Default::default() };
             step_player(&mut b, &inp, dt, &Flat);
+            t += dt;
+            i += 1;
             min_y = min_y.min(b.pos.y);
+            if b.on_ground && t > 0.05 {
+                break;
+            }
         }
-        println!("short hop: height {:.1}px ({:.2} tiles)", y0 - min_y, (y0 - min_y) / TILE);
+        ((y0 - min_y) / TILE, (b.pos.x - x0) / TILE, t)
+    }
+
+    /// Prints the jump envelope used to design the levels.
+    #[test]
+    fn jump_capabilities() {
+        for (name, run, vx, glide) in [
+            ("standing", false, 0.0, false),
+            ("walk", false, WALK_MAX, false),
+            ("run", true, RUN_MAX, false),
+            ("run+glide", true, RUN_MAX, true),
+        ] {
+            let (h, d, t) = jump(run, vx, glide);
+            println!("{name:10}: height {h:.2} tiles  distance {d:.2} tiles  airtime {t:.2}s");
+        }
+        let (_, d, _) = jump(true, RUN_MAX, true);
+        assert!(d > 8.0, "gliding should cross wide gaps");
     }
 }

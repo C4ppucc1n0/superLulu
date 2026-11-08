@@ -1,6 +1,6 @@
 //! ASCII level loading. See the legend at the top of `levels/level1.txt`.
 
-use crate::physics::Coll;
+use crate::physics::{Coll, Fx};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tile {
@@ -14,17 +14,57 @@ pub enum Tile {
     TurretL,
     TurretR,
     Bumper,
+    /// Jelly bounce pad.
+    Spring,
+    /// Blows an updraft straight up.
+    Fan,
+    /// Cookie box with oranges / with a heart (bump it from below or hit it with an orange).
+    BoxOrange,
+    BoxHeart,
+    /// Looks like ground but you can walk through it (hidden rooms).
+    Fake,
+    /// Slides: `\` goes down to the right, `/` goes down to the left.
+    SlideR,
+    SlideL,
+    /// Signpost 1-9 (text comes from `@signN` lines).
+    Sign(u8),
 }
 
 impl Tile {
     pub fn coll(self) -> Coll {
         match self {
-            Tile::Ground | Tile::Stone | Tile::Crumble | Tile::TurretL | Tile::TurretR => Coll::Solid,
+            Tile::Ground
+            | Tile::Stone
+            | Tile::Crumble
+            | Tile::TurretL
+            | Tile::TurretR
+            | Tile::Spring
+            | Tile::Fan
+            | Tile::BoxOrange
+            | Tile::BoxHeart => Coll::Solid,
             Tile::OneWay => Coll::OneWay,
             Tile::Bumper => Coll::Bumper,
             _ => Coll::Empty,
         }
     }
+    pub fn fx(self) -> Fx {
+        match self {
+            Tile::Spring => Fx::Spring,
+            Tile::SlideR => Fx::Slope(1),
+            Tile::SlideL => Fx::Slope(-1),
+            _ => Fx::None,
+        }
+    }
+    pub fn is_box(self) -> bool {
+        matches!(self, Tile::BoxOrange | Tile::BoxHeart)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Theme {
+    Meadow,
+    Factory,
+    Sky,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -32,6 +72,7 @@ pub enum SpawnKind {
     Orange,
     Golden,
     Shield,
+    Heart,
     Checkpoint,
     Goal,
     Jelly,
@@ -56,14 +97,50 @@ pub struct Level {
     pub tiles: Vec<Tile>,
     pub spawns: Vec<Spawn>,
     pub start: (i32, i32),
+    pub name: String,
+    pub theme: Theme,
+    pub signs: Vec<String>,
+    /// Updraft cells above fans.
+    pub wind: Vec<bool>,
+    /// Hidden-room group of each fake tile (-1 = not fake).
+    pub fake_group: Vec<i32>,
+    pub fake_groups: usize,
 }
 
 impl Level {
     pub fn parse(src: &str) -> Level {
-        // collect '---' blocks (comments start with ';')
+        // collect '---' blocks (comments start with ';', metadata with '@')
         let mut blocks: Vec<Vec<Vec<char>>> = vec![];
+        let mut name = String::from("Level");
+        let mut theme = Theme::Meadow;
+        let mut signs = vec![String::new(); 9];
+        let mut wind_h = 8;
         for line in src.lines() {
             if line.starts_with(';') {
+                continue;
+            }
+            if let Some(meta) = line.strip_prefix('@') {
+                let (key, val) = meta.split_once(' ').unwrap_or((meta, ""));
+                let val = val.trim();
+                match key {
+                    "name" => name = val.to_string(),
+                    "theme" => {
+                        theme = match val {
+                            "factory" => Theme::Factory,
+                            "sky" => Theme::Sky,
+                            _ => Theme::Meadow,
+                        }
+                    }
+                    "wind" => wind_h = val.parse().unwrap_or(8),
+                    k if k.starts_with("sign") => {
+                        if let Ok(n) = k[4..].parse::<usize>() {
+                            if (1..=9).contains(&n) {
+                                signs[n - 1] = val.to_string();
+                            }
+                        }
+                    }
+                    _ => {}
+                }
                 continue;
             }
             if line.starts_with("---") {
@@ -92,7 +169,20 @@ impl Level {
             x0 += bw;
         }
 
-        let mut lv = Level { w, h, tiles: vec![Tile::Empty; (w * h) as usize], spawns: vec![], start: (2, h - 4) };
+        let n = (w * h) as usize;
+        let mut lv = Level {
+            w,
+            h,
+            tiles: vec![Tile::Empty; n],
+            spawns: vec![],
+            start: (2, h - 4),
+            name,
+            theme,
+            signs,
+            wind: vec![false; n],
+            fake_group: vec![-1; n],
+            fake_groups: 0,
+        };
         for y in 0..h {
             let mut x = 0;
             while x < w {
@@ -108,6 +198,14 @@ impl Level {
                     '<' => Tile::TurretL,
                     '>' => Tile::TurretR,
                     '|' => Tile::Bumper,
+                    'T' => Tile::Spring,
+                    'U' => Tile::Fan,
+                    'Q' => Tile::BoxOrange,
+                    'R' => Tile::BoxHeart,
+                    '%' => Tile::Fake,
+                    '\\' => Tile::SlideR,
+                    '/' => Tile::SlideL,
+                    '1'..='9' => Tile::Sign(ch as u8 - b'0'),
                     'o' => {
                         spawn(SpawnKind::Orange);
                         Tile::Empty
@@ -118,6 +216,10 @@ impl Level {
                     }
                     'S' => {
                         spawn(SpawnKind::Shield);
+                        Tile::Empty
+                    }
+                    '+' => {
+                        spawn(SpawnKind::Heart);
                         Tile::Empty
                     }
                     'K' => {
@@ -160,6 +262,60 @@ impl Level {
                 x += 1;
             }
         }
+
+        // items inside a secret room stay hidden: a spawn cell with fake ground above or below it
+        // becomes fake ground too (so the room doesn't show holes where its oranges are)
+        let spawn_cells: Vec<usize> = lv.spawns.iter().filter(|s| !matches!(s.kind, SpawnKind::PlatH | SpawnKind::PlatV)).filter_map(|s| lv.idx(s.tx, s.ty)).collect();
+        loop {
+            let mut changed = false;
+            for &i in &spawn_cells {
+                let (x, y) = ((i as i32) % w, (i as i32) / w);
+                if lv.tiles[i] == Tile::Empty && (lv.tile(x, y - 1) == Tile::Fake || lv.tile(x, y + 1) == Tile::Fake) {
+                    lv.tiles[i] = Tile::Fake;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+
+        // updrafts: straight up from each fan until something solid
+        for y in 0..h {
+            for x in 0..w {
+                if lv.tile(x, y) == Tile::Fan {
+                    for k in 1..=wind_h {
+                        if lv.tile(x, y - k).coll() == Coll::Solid || y - k < 0 {
+                            break;
+                        }
+                        let i = lv.idx(x, y - k).unwrap();
+                        lv.wind[i] = true;
+                    }
+                }
+            }
+        }
+
+        // hidden rooms: connected groups of fake tiles are revealed together
+        for start in 0..n {
+            if lv.tiles[start] != Tile::Fake || lv.fake_group[start] >= 0 {
+                continue;
+            }
+            let g = lv.fake_groups as i32;
+            lv.fake_groups += 1;
+            let mut stack = vec![start];
+            lv.fake_group[start] = g;
+            while let Some(i) = stack.pop() {
+                let (x, y) = ((i as i32) % w, (i as i32) / w);
+                for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                    if let Some(j) = lv.idx(x + dx, y + dy) {
+                        if lv.tiles[j] == Tile::Fake && lv.fake_group[j] < 0 {
+                            lv.fake_group[j] = g;
+                            stack.push(j);
+                        }
+                    }
+                }
+            }
+        }
         lv
     }
 
@@ -177,19 +333,45 @@ impl Level {
     pub fn idx(&self, x: i32, y: i32) -> Option<usize> {
         (x >= 0 && x < self.w && y >= 0 && y < self.h).then(|| (y * self.w + x) as usize)
     }
+
+    pub fn wind_at(&self, x: i32, y: i32) -> bool {
+        self.idx(x, y).is_some_and(|i| self.wind[i])
+    }
+
+    pub fn sign_text(&self, n: u8) -> &str {
+        self.signs.get(n as usize - 1).map(|s| s.as_str()).unwrap_or("")
+    }
 }
+
+/// The three levels, in order.
+pub const LEVELS: [&str; 3] = [include_str!("levels/level1.txt"), include_str!("levels/level2.txt"), include_str!("levels/level3.txt")];
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn parses_level1() {
-        let lv = Level::parse(include_str!("levels/level1.txt"));
-        assert_eq!(lv.h, 20);
-        assert_eq!(lv.w, 290);
-        assert_eq!(lv.spawns.iter().filter(|s| s.kind == SpawnKind::Golden).count(), 3);
-        assert_eq!(lv.spawns.iter().filter(|s| s.kind == SpawnKind::Goal).count(), 1);
-        assert_eq!(lv.start, (3, 16));
+    fn parses_levels() {
+        for (i, src) in LEVELS.iter().enumerate() {
+            let lv = Level::parse(src);
+            assert_eq!(lv.spawns.iter().filter(|s| s.kind == SpawnKind::Golden).count(), 3, "level {}", i + 1);
+            assert_eq!(lv.spawns.iter().filter(|s| s.kind == SpawnKind::Goal).count(), 1, "level {}", i + 1);
+            assert!(lv.spawns.iter().filter(|s| s.kind == SpawnKind::Checkpoint).count() >= 2, "level {}", i + 1);
+            assert!(!lv.tiles.contains(&Tile::SpikeDown), "no ceiling spikes in level {}", i + 1);
+            assert!(lv.name != "Level");
+        }
+    }
+
+    #[test]
+    fn metadata_wind_and_hidden_rooms() {
+        let src = "@name Test\n@theme sky\n@sign1 Hello there\n@wind 3\n   %%  \n 1 %%  \n  U    \n#######";
+        let lv = Level::parse(src);
+        assert_eq!(lv.name, "Test");
+        assert_eq!(lv.theme, Theme::Sky);
+        assert_eq!(lv.sign_text(1), "Hello there");
+        let fan_y = lv.h - 2;
+        assert!(lv.wind_at(2, fan_y - 1) && lv.wind_at(2, fan_y - 3) && !lv.wind_at(2, fan_y - 4));
+        assert_eq!(lv.fake_groups, 1);
+        assert_eq!(lv.tile(1, fan_y - 1), Tile::Sign(1));
     }
 }

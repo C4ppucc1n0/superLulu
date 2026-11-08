@@ -1,10 +1,11 @@
-//! All drawing: procedural world art (soft, rounded cartoon style) + the Lulu sprite.
+//! All drawing: procedural world art (soft, rounded cartoon style, one look per level theme) + the Lulu sprite.
 
 use macroquad::prelude::*;
 
 use crate::game::*;
-use crate::level::Tile;
+use crate::level::{Theme, Tile};
 use crate::physics::*;
+use crate::save::Progress;
 
 pub struct Assets {
     pub lulu: Texture2D,
@@ -34,21 +35,6 @@ fn with_a(c: Color, a: f32) -> Color {
     Color::new(c.r, c.g, c.b, c.a * a)
 }
 
-const SKY_TOP: Color = rgb(96, 170, 245);
-const SKY_BOTTOM: Color = rgb(196, 232, 255);
-const DIRT: Color = rgb(214, 146, 86);
-const DIRT_DARK: Color = rgb(181, 113, 62);
-const DIRT_SPECK: Color = rgb(194, 126, 70);
-const GRASS: Color = rgb(118, 202, 82);
-const GRASS_LIGHT: Color = rgb(168, 230, 118);
-const GRASS_DARK: Color = rgb(84, 160, 62);
-const STONE: Color = rgb(156, 166, 196);
-const STONE_LIGHT: Color = rgb(192, 201, 226);
-const STONE_MID: Color = rgb(128, 137, 168);
-const STONE_DARK: Color = rgb(96, 104, 134);
-const WOOD: Color = rgb(198, 140, 80);
-const WOOD_LIGHT: Color = rgb(232, 182, 116);
-const WOOD_DARK: Color = rgb(146, 98, 54);
 const COOKIE: Color = rgb(240, 200, 132);
 const COOKIE_DARK: Color = rgb(196, 146, 82);
 const CHOC: Color = rgb(112, 70, 44);
@@ -61,6 +47,83 @@ const LEAF: Color = rgb(80, 170, 60);
 const GOLD: Color = rgb(255, 214, 52);
 const GOLD_LIGHT: Color = rgb(255, 246, 180);
 const INK: Color = rgb(52, 34, 26);
+const HEART: Color = rgb(255, 84, 110);
+const HEART_DARK: Color = rgb(196, 40, 70);
+const JELLY_PINK: Color = rgb(255, 120, 190);
+const JELLY_LIGHT: Color = rgb(255, 200, 232);
+
+/// Per-theme tile colours.
+struct Pal {
+    fill: Color,
+    fill_dark: Color,
+    speck: Color,
+    top: Color,
+    top_light: Color,
+    top_dark: Color,
+    stone: Color,
+    stone_light: Color,
+    stone_mid: Color,
+    stone_dark: Color,
+    plank: Color,
+    plank_light: Color,
+    plank_dark: Color,
+}
+
+const MEADOW: Pal = Pal {
+    fill: rgb(214, 146, 86),
+    fill_dark: rgb(181, 113, 62),
+    speck: rgb(194, 126, 70),
+    top: rgb(118, 202, 82),
+    top_light: rgb(168, 230, 118),
+    top_dark: rgb(84, 160, 62),
+    stone: rgb(156, 166, 196),
+    stone_light: rgb(192, 201, 226),
+    stone_mid: rgb(128, 137, 168),
+    stone_dark: rgb(96, 104, 134),
+    plank: rgb(198, 140, 80),
+    plank_light: rgb(232, 182, 116),
+    plank_dark: rgb(146, 98, 54),
+};
+
+const FACTORY: Pal = Pal {
+    fill: rgb(206, 148, 90),
+    fill_dark: rgb(150, 96, 56),
+    speck: rgb(104, 62, 40),
+    top: rgb(255, 172, 204),
+    top_light: rgb(255, 222, 236),
+    top_dark: rgb(222, 120, 164),
+    stone: rgb(160, 170, 190),
+    stone_light: rgb(204, 212, 228),
+    stone_mid: rgb(132, 140, 162),
+    stone_dark: rgb(88, 94, 116),
+    plank: rgb(238, 200, 150),
+    plank_light: rgb(255, 230, 190),
+    plank_dark: rgb(190, 140, 90),
+};
+
+const SKY: Pal = Pal {
+    fill: rgb(246, 249, 255),
+    fill_dark: rgb(168, 190, 234),
+    speck: rgb(226, 236, 252),
+    top: rgb(255, 255, 255),
+    top_light: rgb(255, 255, 255),
+    top_dark: rgb(210, 226, 250),
+    stone: rgb(206, 182, 240),
+    stone_light: rgb(236, 222, 255),
+    stone_mid: rgb(176, 150, 220),
+    stone_dark: rgb(132, 106, 182),
+    plank: rgb(255, 255, 255),
+    plank_light: rgb(255, 255, 255),
+    plank_dark: rgb(186, 206, 240),
+};
+
+fn pal(t: Theme) -> &'static Pal {
+    match t {
+        Theme::Meadow => &MEADOW,
+        Theme::Factory => &FACTORY,
+        Theme::Sky => &SKY,
+    }
+}
 
 pub fn world_cam(x: f32, y: f32, w: f32) -> Camera2D {
     Camera2D { target: vec2(x + w / 2.0, y + VIEW_H / 2.0), zoom: vec2(2.0 / w, 2.0 / VIEW_H), ..Default::default() }
@@ -82,46 +145,84 @@ fn gradient_rect(x: f32, y: f32, w: f32, h: f32, top: Color, bottom: Color) {
     draw_mesh(&mesh);
 }
 
-// ------------------------------------------------------------------------------------------ background
+fn cloud(cx: f32, cy: f32, s: f32, color: Color) {
+    draw_circle(cx, cy, 18.0 * s, color);
+    draw_circle(cx + 20.0 * s, cy - 8.0 * s, 22.0 * s, color);
+    draw_circle(cx + 44.0 * s, cy, 17.0 * s, color);
+    draw_rectangle(cx, cy, 44.0 * s, 17.0 * s, color);
+}
 
-pub fn draw_background(cam: Vec2, view_w: f32, level_h: f32, t: f32) {
-    set_default_camera();
-    gradient_rect(0.0, 0.0, screen_width(), screen_height(), SKY_TOP, SKY_BOTTOM);
+fn draw_heart(c: Vec2, r: f32, color: Color, dark: Color) {
+    for col in [dark, color] {
+        let k = if col == dark { 1.0 + 1.6 / r.max(1.0) } else { 1.0 };
+        let rr = r * k;
+        draw_circle(c.x - rr * 0.48, c.y - rr * 0.18, rr * 0.54, col);
+        draw_circle(c.x + rr * 0.48, c.y - rr * 0.18, rr * 0.54, col);
+        draw_triangle(vec2(c.x - rr * 0.98, c.y - 0.02 * rr), vec2(c.x + rr * 0.98, c.y - 0.02 * rr), vec2(c.x, c.y + rr * 0.95), col);
+    }
+    draw_circle(c.x - r * 0.5, c.y - r * 0.32, r * 0.18, rgba(255, 255, 255, 190));
+}
 
+fn draw_gear(cx: f32, cy: f32, r: f32, rot: f32, color: Color, hole: Color) {
+    let teeth = 10;
+    for k in 0..teeth {
+        let a = rot + k as f32 * std::f32::consts::TAU / teeth as f32;
+        draw_rectangle_ex(
+            cx + a.cos() * r,
+            cy + a.sin() * r,
+            r * 0.36,
+            r * 0.3,
+            DrawRectangleParams { offset: vec2(0.5, 0.5), rotation: a, color },
+        );
+    }
+    draw_circle(cx, cy, r, color);
+    draw_circle(cx, cy, r * 0.34, hole);
+}
+
+// ------------------------------------------------------------------------------------------ backgrounds
+
+fn layer_cam(cam: Vec2, view_w: f32, level_h: f32, fx: f32, fy: f32) -> f32 {
     let max_y = level_h - VIEW_H;
-    // (x parallax, y parallax, colour, baseline, radius, spacing, seed)
-    let layers = [
-        (0.12, 0.25, rgba(255, 255, 255, 235), 0.0, 0.0, 260.0, 7),
-        (0.25, 0.4, rgb(170, 214, 236), 560.0, 120.0, 190.0, 1),
-        (0.45, 0.6, rgb(146, 206, 150), 590.0, 80.0, 150.0, 2),
-    ];
-    for (i, &(fx, fy, color, base, radius, spacing, seed)) in layers.iter().enumerate() {
-        let lx = cam.x * fx;
-        let ly = max_y + (cam.y - max_y) * fy;
-        set_camera(&world_cam(lx, ly, view_w));
-        let first = (lx / spacing).floor() as i32 - 2;
-        let last = ((lx + view_w) / spacing).ceil() as i32 + 2;
-        if i == 0 {
-            // clouds
-            for k in first..=last {
-                let h = hash(k, seed);
-                let cx = k as f32 * spacing + (h % 120) as f32 + (t * 6.0) % spacing;
-                let cy = 120.0 + ((h >> 8) % 140) as f32;
-                let s = 0.7 + ((h >> 16) % 50) as f32 / 100.0;
-                draw_circle(cx, cy, 18.0 * s, color);
-                draw_circle(cx + 20.0 * s, cy - 8.0 * s, 22.0 * s, color);
-                draw_circle(cx + 44.0 * s, cy, 17.0 * s, color);
-                draw_rectangle(cx, cy, 44.0 * s, 17.0 * s, color);
-            }
-            continue;
-        }
-        for k in first..=last {
+    let lx = cam.x * fx;
+    let ly = max_y + (cam.y - max_y) * fy;
+    set_camera(&world_cam(lx, ly, view_w));
+    lx
+}
+
+fn span(lx: f32, view_w: f32, spacing: f32) -> std::ops::RangeInclusive<i32> {
+    ((lx / spacing).floor() as i32 - 2)..=(((lx + view_w) / spacing).ceil() as i32 + 2)
+}
+
+pub fn draw_background(theme: Theme, cam: Vec2, view_w: f32, level_h: f32, t: f32) {
+    match theme {
+        Theme::Meadow => bg_meadow(cam, view_w, level_h, t),
+        Theme::Factory => bg_factory(cam, view_w, level_h, t),
+        Theme::Sky => bg_sky(cam, view_w, level_h, t),
+    }
+}
+
+fn bg_meadow(cam: Vec2, view_w: f32, level_h: f32, t: f32) {
+    set_default_camera();
+    gradient_rect(0.0, 0.0, screen_width(), screen_height(), rgb(96, 170, 245), rgb(196, 232, 255));
+    // clouds
+    let lx = layer_cam(cam, view_w, level_h, 0.12, 0.25);
+    for k in span(lx, view_w, 260.0) {
+        let h = hash(k, 7);
+        let cx = k as f32 * 260.0 + (h % 120) as f32 + (t * 6.0) % 260.0;
+        let cy = 120.0 + ((h >> 8) % 140) as f32;
+        cloud(cx, cy, 0.7 + ((h >> 16) % 50) as f32 / 100.0, rgba(255, 255, 255, 235));
+    }
+    // two hill layers, tangerine trees on the near one
+    for (i, &(fx, fy, color, base, radius, spacing, seed)) in
+        [(0.25, 0.4, rgb(170, 214, 236), 560.0, 120.0, 190.0, 1), (0.45, 0.6, rgb(146, 206, 150), 590.0, 80.0, 150.0, 2)].iter().enumerate()
+    {
+        let lx = layer_cam(cam, view_w, level_h, fx, fy);
+        for k in span(lx, view_w, spacing) {
             let h = hash(k, seed);
             let r = radius + (h % 50) as f32;
             let cx = k as f32 * spacing + ((h >> 8) % 60) as f32;
             draw_circle(cx, base + r * 0.25, r, color);
-            if i == 2 && h % 3 == 0 {
-                // little tangerine trees on the near hills
+            if i == 1 && h % 3 == 0 {
                 let tx = cx + ((h >> 4) % 40) as f32 - 20.0;
                 let ty = base + r * 0.25 - r * 0.92;
                 draw_rectangle(tx - 2.5, ty, 5.0, 18.0, rgb(150, 110, 80));
@@ -135,60 +236,191 @@ pub fn draw_background(cam: Vec2, view_w: f32, level_h: f32, t: f32) {
     }
 }
 
+fn bg_factory(cam: Vec2, view_w: f32, level_h: f32, t: f32) {
+    set_default_camera();
+    gradient_rect(0.0, 0.0, screen_width(), screen_height(), rgb(255, 226, 194), rgb(236, 176, 132));
+    // far wall: tall arched windows with sky behind them
+    let lx = layer_cam(cam, view_w, level_h, 0.15, 0.3);
+    for k in span(lx, view_w, 240.0) {
+        let x = k as f32 * 240.0 + 60.0;
+        let (y, w, h) = (150.0, 90.0, 190.0);
+        draw_rectangle(x - 8.0, y - 8.0, w + 16.0, h + 16.0, rgb(232, 168, 124));
+        draw_circle(x + w / 2.0, y, w / 2.0 + 8.0, rgb(232, 168, 124));
+        gradient_rect(x, y, w, h, rgb(140, 200, 255), rgb(214, 238, 255));
+        draw_circle(x + w / 2.0, y, w / 2.0, rgb(140, 200, 255));
+        cloud(x + 10.0 + (hash(k, 3) % 30) as f32, y + 60.0, 0.45, rgba(255, 255, 255, 220));
+        draw_rectangle(x + w / 2.0 - 3.0, y - w / 2.0, 6.0, h + w / 2.0, rgb(232, 168, 124));
+        draw_rectangle(x, y + 70.0, w, 6.0, rgb(232, 168, 124));
+    }
+    // gears and pipes
+    let lx = layer_cam(cam, view_w, level_h, 0.35, 0.45);
+    let gear = rgb(220, 150, 108);
+    for k in span(lx, view_w, 330.0) {
+        let h = hash(k, 11);
+        let cx = k as f32 * 330.0 + (h % 80) as f32;
+        let cy = 380.0 + ((h >> 8) % 120) as f32;
+        let r = 46.0 + ((h >> 16) % 30) as f32;
+        let dir = if h % 2 == 0 { 1.0 } else { -1.0 };
+        draw_gear(cx, cy, r, t * 0.4 * dir, gear, rgb(240, 186, 142));
+        draw_gear(cx + r * 1.55, cy - r * 0.8, r * 0.55, -t * 0.4 * dir * 1.8 + 0.3, gear, rgb(240, 186, 142));
+    }
+    draw_rectangle(lx - 50.0, 300.0, view_w + 100.0, 14.0, rgb(214, 140, 100));
+    for k in span(lx, view_w, 160.0) {
+        draw_rectangle(k as f32 * 160.0, 296.0, 14.0, 22.0, rgb(196, 124, 88));
+    }
+    // near: big cookie jars on shelves
+    let lx = layer_cam(cam, view_w, level_h, 0.55, 0.62);
+    let shelf = rgb(198, 128, 88);
+    for k in span(lx, view_w, 210.0) {
+        let h = hash(k, 21);
+        if h % 3 == 0 {
+            continue;
+        }
+        let x = k as f32 * 210.0 + (h % 60) as f32;
+        let base = 600.0;
+        draw_rectangle(x - 14.0, base - 110.0, 76.0, 110.0, rgb(214, 150, 112));
+        draw_rectangle(x - 18.0, base - 122.0, 84.0, 14.0, shelf);
+        draw_circle(x + 24.0, base - 60.0, 22.0, rgb(232, 178, 120));
+        for (ox, oy) in [(-8.0, -6.0), (6.0, 4.0), (10.0, -10.0)] {
+            draw_circle(x + 24.0 + ox, base - 60.0 + oy, 3.2, rgb(170, 110, 76));
+        }
+    }
+    draw_rectangle(lx - 50.0, 600.0, view_w + 100.0, 2000.0, shelf);
+}
+
+fn bg_sky(cam: Vec2, view_w: f32, level_h: f32, t: f32) {
+    set_default_camera();
+    let (sw, sh) = (screen_width(), screen_height());
+    gradient_rect(0.0, 0.0, sw, sh, rgb(110, 172, 252), rgb(255, 222, 238));
+    // sun
+    for (r, a) in [(0.2, 40), (0.14, 70), (0.09, 255)] {
+        draw_circle(sw * 0.82, sh * 0.2, sh * r, rgba(255, 246, 200, a));
+    }
+    // far clouds
+    let lx = layer_cam(cam, view_w, level_h, 0.08, 0.2);
+    for k in span(lx, view_w, 200.0) {
+        let h = hash(k, 5);
+        let cx = k as f32 * 200.0 + (h % 90) as f32 + (t * 4.0) % 200.0;
+        cloud(cx, 90.0 + ((h >> 8) % 220) as f32, 0.5 + ((h >> 16) % 40) as f32 / 100.0, rgba(255, 255, 255, 170));
+    }
+    // floating islands
+    let lx = layer_cam(cam, view_w, level_h, 0.25, 0.35);
+    for k in span(lx, view_w, 280.0) {
+        let h = hash(k, 9);
+        if h % 2 == 0 {
+            continue;
+        }
+        let cx = k as f32 * 280.0 + (h % 100) as f32;
+        let cy = 260.0 + ((h >> 8) % 160) as f32 + (t * 0.8 + k as f32).sin() * 4.0;
+        let w = 50.0 + ((h >> 16) % 40) as f32;
+        draw_triangle(vec2(cx - w, cy), vec2(cx + w, cy), vec2(cx, cy + w * 0.9), rgb(196, 176, 226));
+        draw_ellipse(cx, cy, w, 9.0, 0.0, rgb(164, 214, 170));
+        draw_circle(cx - w * 0.3, cy - 10.0, 9.0, rgb(150, 200, 160));
+        draw_circle(cx - w * 0.3 + 3.0, cy - 13.0, 2.4, rgb(255, 170, 70));
+    }
+    // cloud sea
+    for (fx, fy, base, col, seed) in [(0.4, 0.5, 560.0, rgba(238, 240, 255, 200), 13), (0.6, 0.7, 600.0, rgb(210, 220, 248), 17)] {
+        let lx = layer_cam(cam, view_w, level_h, fx, fy);
+        for k in span(lx, view_w, 70.0) {
+            let h = hash(k, seed);
+            let r = 40.0 + (h % 30) as f32;
+            draw_circle(k as f32 * 70.0, base + 10.0 + (t * 1.2 + k as f32 * 0.7).sin() * 3.0, r, col);
+        }
+        draw_rectangle(lx - 50.0, base + 20.0, view_w + 100.0, 2000.0, col);
+    }
+}
+
 // ------------------------------------------------------------------------------------------ tiles
 
 fn solidish(t: Tile) -> bool {
-    matches!(t, Tile::Ground | Tile::Stone | Tile::TurretL | Tile::TurretR)
+    matches!(t, Tile::Ground | Tile::Stone | Tile::TurretL | Tile::TurretR | Tile::Fake | Tile::Fan | Tile::Spring | Tile::SlideR | Tile::SlideL)
 }
 
-fn draw_ground(g: &Game, tx: i32, ty: i32, x: f32, y: f32) {
+fn groundish(t: Tile) -> bool {
+    matches!(t, Tile::Ground | Tile::Fake | Tile::SlideR | Tile::SlideL)
+}
+
+fn draw_ground(g: &Game, tx: i32, ty: i32, alpha: f32) {
+    let (x, y) = (tx as f32 * TILE, ty as f32 * TILE);
     let lv = &g.lv;
-    let up = lv.tile(tx, ty - 1);
-    let open = |t: Tile| t != Tile::Ground;
-    draw_rectangle(x, y, TILE, TILE, DIRT);
+    let p = pal(lv.theme);
+    let c = |col: Color| with_a(col, alpha);
+    draw_rectangle(x, y, TILE, TILE, c(p.fill));
     let h = hash(tx, ty);
-    for k in 0..3 {
-        let hx = ((h >> (k * 6)) % 24) as f32 + 4.0;
-        let hy = ((h >> (k * 6 + 3)) % 18) as f32 + 10.0;
-        draw_circle(x + hx, y + hy, 2.2 + (k as f32) * 0.4, DIRT_SPECK);
-    }
-    if open(lv.tile(tx - 1, ty)) {
-        draw_rectangle(x, y, 3.0, TILE, DIRT_DARK);
-    }
-    if open(lv.tile(tx + 1, ty)) {
-        draw_rectangle(x + TILE - 3.0, y, 3.0, TILE, DIRT_DARK);
-    }
-    if ty + 1 < lv.h && open(lv.tile(tx, ty + 1)) {
-        draw_rectangle(x, y + TILE - 4.0, TILE, 4.0, DIRT_DARK);
-    }
-    if !solidish(up) {
-        draw_rectangle(x, y + 9.0, TILE, 4.0, DIRT_DARK);
-        draw_rectangle(x, y, TILE, 9.0, GRASS);
-        for i in 0..4 {
-            draw_circle(x + 4.0 + i as f32 * 8.0, y + 9.0, 4.5, GRASS);
+    match lv.theme {
+        Theme::Factory => {
+            for k in 0..2 {
+                let hx = ((h >> (k * 6)) % 22) as f32 + 5.0;
+                let hy = ((h >> (k * 6 + 3)) % 16) as f32 + 12.0;
+                draw_circle(x + hx, y + hy, 2.8, c(p.speck));
+            }
         }
-        draw_rectangle(x, y, TILE, 3.0, GRASS_LIGHT);
-        if open(lv.tile(tx - 1, ty)) {
-            draw_circle(x + 1.0, y + 6.0, 5.5, GRASS_DARK);
-            draw_circle(x + 2.5, y + 5.0, 5.0, GRASS);
-        }
-        if open(lv.tile(tx + 1, ty)) {
-            draw_circle(x + TILE - 1.0, y + 6.0, 5.5, GRASS_DARK);
-            draw_circle(x + TILE - 2.5, y + 5.0, 5.0, GRASS);
+        _ => {
+            for k in 0..3 {
+                let hx = ((h >> (k * 6)) % 24) as f32 + 4.0;
+                let hy = ((h >> (k * 6 + 3)) % 18) as f32 + 10.0;
+                draw_circle(x + hx, y + hy, 2.2 + (k as f32) * 0.4, c(p.speck));
+            }
         }
     }
-}
-
-fn draw_decor(g: &Game, tx: i32, ty: i32, x: f32, y: f32) {
-    if g.lv.tile(tx, ty - 1) != Tile::Empty {
+    let open_l = !groundish(lv.tile(tx - 1, ty));
+    let open_r = !groundish(lv.tile(tx + 1, ty));
+    if open_l {
+        draw_rectangle(x, y, 3.0, TILE, c(p.fill_dark));
+    }
+    if open_r {
+        draw_rectangle(x + TILE - 3.0, y, 3.0, TILE, c(p.fill_dark));
+    }
+    if ty + 1 < lv.h && !groundish(lv.tile(tx, ty + 1)) {
+        draw_rectangle(x, y + TILE - 4.0, TILE, 4.0, c(p.fill_dark));
+    }
+    if solidish(lv.tile(tx, ty - 1)) {
         return;
     }
+    // exposed top: grass / icing / fluffy cloud
+    let bump = if lv.theme == Theme::Sky { 6.0 } else { 4.5 };
+    draw_rectangle(x, y + 9.0, TILE, 4.0, c(p.top_dark));
+    if lv.theme == Theme::Factory {
+        // icing drips
+        for k in 0..2 {
+            let dx = 5.0 + ((h >> (k * 4)) % 20) as f32;
+            let len = 4.0 + ((h >> (k * 4 + 2)) % 9) as f32;
+            draw_rectangle(x + dx - 2.5, y + 9.0, 5.0, len, c(p.top));
+            draw_circle(x + dx, y + 9.0 + len, 2.5, c(p.top));
+        }
+    }
+    draw_rectangle(x, y, TILE, 9.0, c(p.top));
+    for i in 0..4 {
+        draw_circle(x + 4.0 + i as f32 * 8.0, y + 9.0, bump, c(p.top));
+    }
+    draw_rectangle(x, y, TILE, 3.0, c(p.top_light));
+    if open_l {
+        draw_circle(x + 1.0, y + 6.0, 5.5, c(p.top_dark));
+        draw_circle(x + 2.5, y + 5.0, 5.0, c(p.top));
+    }
+    if open_r {
+        draw_circle(x + TILE - 1.0, y + 6.0, 5.5, c(p.top_dark));
+        draw_circle(x + TILE - 2.5, y + 5.0, 5.0, c(p.top));
+    }
+    if lv.theme == Theme::Factory {
+        // sprinkles
+        for k in 0..3 {
+            let sx = x + 4.0 + ((h >> (k * 5 + 1)) % 24) as f32;
+            let sy = y + 2.0 + ((h >> (k * 5 + 3)) % 6) as f32;
+            let col = [rgb(255, 255, 255), rgb(120, 200, 255), rgb(255, 220, 90), rgb(140, 220, 140)][((h >> (k * 3)) % 4) as usize];
+            draw_rectangle(sx, sy, 4.0, 1.8, c(col));
+        }
+    }
+}
+
+fn draw_decor(g: &Game, tx: i32, ty: i32) {
+    let (x, y) = (tx as f32 * TILE, ty as f32 * TILE);
+    let p = pal(g.lv.theme);
     let h = hash(tx, ty + 1000);
-    match h % 9 {
-        0 => {
-            // flower
+    match (g.lv.theme, h % 9) {
+        (Theme::Meadow, 0) => {
             let fx = x + 8.0 + (h >> 8) as f32 % 16.0;
-            draw_line(fx, y, fx, y - 9.0, 1.5, GRASS_DARK);
+            draw_line(fx, y, fx, y - 9.0, 1.5, p.top_dark);
             let col = [rgb(255, 120, 150), rgb(255, 220, 90), rgb(255, 255, 255), rgb(190, 140, 255)][(h >> 4) as usize % 4];
             for k in 0..5 {
                 let a = k as f32 * 1.2566;
@@ -196,32 +428,69 @@ fn draw_decor(g: &Game, tx: i32, ty: i32, x: f32, y: f32) {
             }
             draw_circle(fx, y - 10.0, 1.6, rgb(255, 190, 60));
         }
-        1 | 2 => {
-            // grass tuft
+        (Theme::Meadow, 1 | 2) => {
             let fx = x + 6.0 + (h >> 8) as f32 % 20.0;
             for k in -1i32..=1 {
                 let kx = k as f32 * 3.0;
-                draw_triangle(vec2(fx + kx - 2.0, y + 1.0), vec2(fx + kx + 2.0, y + 1.0), vec2(fx + kx * 1.6, y - 7.0 + k.abs() as f32 * 2.0), GRASS_DARK);
+                draw_triangle(vec2(fx + kx - 2.0, y + 1.0), vec2(fx + kx + 2.0, y + 1.0), vec2(fx + kx * 1.6, y - 7.0 + k.abs() as f32 * 2.0), p.top_dark);
             }
         }
-        3 => {
-            // round bush
+        (Theme::Meadow, 3) => {
             let fx = x + 16.0;
-            draw_circle(fx - 7.0, y - 3.0, 7.0, GRASS_DARK);
-            draw_circle(fx + 6.0, y - 3.0, 8.0, GRASS_DARK);
+            draw_circle(fx - 7.0, y - 3.0, 7.0, p.top_dark);
+            draw_circle(fx + 6.0, y - 3.0, 8.0, p.top_dark);
             draw_circle(fx, y - 7.0, 8.0, rgb(100, 182, 70));
-            draw_circle(fx - 2.0, y - 10.0, 3.0, GRASS_LIGHT);
+            draw_circle(fx - 2.0, y - 10.0, 3.0, p.top_light);
+        }
+        (Theme::Factory, 0) => {
+            // lollipop
+            let fx = x + 10.0 + (h >> 8) as f32 % 12.0;
+            draw_line(fx, y, fx, y - 14.0, 2.0, rgb(255, 255, 255));
+            draw_circle(fx, y - 17.0, 6.0, [rgb(255, 110, 150), rgb(120, 200, 255), rgb(255, 200, 70)][(h >> 4) as usize % 3]);
+            draw_circle(fx - 2.0, y - 19.0, 2.0, rgba(255, 255, 255, 200));
+        }
+        (Theme::Factory, 1) => {
+            // little stack of cookies
+            let fx = x + 16.0;
+            for k in 0..3 {
+                draw_ellipse(fx, y - 3.0 - k as f32 * 4.0, 9.0, 3.0, 0.0, if k % 2 == 0 { COOKIE_DARK } else { COOKIE });
+            }
+        }
+        (Theme::Sky, 0 | 1) => {
+            // sparkle
+            let fx = x + 8.0 + (h >> 8) as f32 % 16.0;
+            let s = 3.0 + ((g.t * 3.0 + h as f32).sin() * 0.5 + 0.5) * 2.0;
+            let col = rgba(255, 236, 150, 230);
+            draw_triangle(vec2(fx - s, y - 8.0), vec2(fx + s, y - 8.0), vec2(fx, y - 8.0 - s * 1.8), col);
+            draw_triangle(vec2(fx - s, y - 8.0), vec2(fx + s, y - 8.0), vec2(fx, y - 8.0 + s * 1.8), col);
+        }
+        (Theme::Sky, 2) => {
+            let fx = x + 10.0 + (h >> 8) as f32 % 12.0;
+            draw_line(fx, y, fx, y - 8.0, 1.5, rgb(130, 190, 140));
+            draw_circle(fx, y - 9.0, 2.6, rgb(255, 180, 220));
         }
         _ => {}
     }
 }
 
-fn draw_stone(x: f32, y: f32) {
-    draw_rectangle(x, y, TILE, TILE, STONE_DARK);
-    draw_rectangle(x + 2.0, y + 2.0, TILE - 4.0, TILE - 4.0, STONE);
-    draw_rectangle(x + 2.0, y + 2.0, TILE - 4.0, 4.0, STONE_LIGHT);
-    draw_rectangle(x + 2.0, y + TILE - 6.0, TILE - 4.0, 4.0, STONE_MID);
-    draw_circle(x + 7.0, y + 10.0, 1.5, STONE_LIGHT);
+fn draw_stone(theme: Theme, x: f32, y: f32) {
+    let p = pal(theme);
+    draw_rectangle(x, y, TILE, TILE, p.stone_dark);
+    draw_rectangle(x + 2.0, y + 2.0, TILE - 4.0, TILE - 4.0, p.stone);
+    draw_rectangle(x + 2.0, y + 2.0, TILE - 4.0, 4.0, p.stone_light);
+    draw_rectangle(x + 2.0, y + TILE - 6.0, TILE - 4.0, 4.0, p.stone_mid);
+    match theme {
+        Theme::Factory => {
+            for (ox, oy) in [(6.0, 9.0), (26.0, 9.0), (6.0, 22.0), (26.0, 22.0)] {
+                draw_circle(x + ox, y + oy, 1.6, p.stone_dark);
+                draw_circle(x + ox - 0.4, y + oy - 0.4, 0.8, p.stone_light);
+            }
+        }
+        Theme::Sky => {
+            draw_triangle(vec2(x + 6.0, y + 24.0), vec2(x + 12.0, y + 24.0), vec2(x + 22.0, y + 8.0), rgba(255, 255, 255, 120));
+        }
+        Theme::Meadow => draw_circle(x + 7.0, y + 10.0, 1.5, p.stone_light),
+    }
 }
 
 fn draw_turret(t: Option<&Turret>, x: f32, y: f32, dir: f32) {
@@ -232,7 +501,7 @@ fn draw_turret(t: Option<&Turret>, x: f32, y: f32, dir: f32) {
     draw_circle(mx, y + 16.0, 9.0, rgb(60, 48, 66));
     draw_circle(mx, y + 16.0, 6.0, rgb(24, 16, 24));
     if let Some(t) = t {
-        let charge = 1.0 - (t.timer / 0.6).clamp(0.0, 1.0);
+        let charge = 1.0 - (t.timer / 0.8).clamp(0.0, 1.0);
         if charge > 0.0 {
             draw_circle(mx, y + 16.0, 5.0 * charge, rgba(255, 140, 40, 200));
         }
@@ -240,7 +509,6 @@ fn draw_turret(t: Option<&Turret>, x: f32, y: f32, dir: f32) {
             draw_circle(mx + dir * 6.0, y + 16.0, 8.0, rgba(255, 230, 150, 220));
         }
     }
-    // angry little eyes
     let ex = x + 16.0 - dir * 5.0;
     draw_circle(ex - 4.0, y + 9.0, 2.6, WHITE);
     draw_circle(ex + 4.0, y + 9.0, 2.6, WHITE);
@@ -251,16 +519,41 @@ fn draw_turret(t: Option<&Turret>, x: f32, y: f32, dir: f32) {
 }
 
 fn draw_oneway(g: &Game, tx: i32, ty: i32, x: f32, y: f32) {
-    draw_rectangle(x, y, TILE, 11.0, WOOD);
-    draw_rectangle(x, y, TILE, 3.0, WOOD_LIGHT);
-    draw_rectangle(x, y + 9.0, TILE, 2.0, WOOD_DARK);
-    draw_circle(x + 6.0, y + 6.0, 1.3, WOOD_DARK);
-    draw_circle(x + 26.0, y + 6.0, 1.3, WOOD_DARK);
-    if g.lv.tile(tx - 1, ty) != Tile::OneWay {
-        draw_rectangle(x, y, 2.0, 11.0, WOOD_DARK);
+    let p = pal(g.lv.theme);
+    let edge_l = g.lv.tile(tx - 1, ty) != Tile::OneWay;
+    let edge_r = g.lv.tile(tx + 1, ty) != Tile::OneWay;
+    if g.lv.theme == Theme::Sky {
+        // fluffy cloud strip
+        draw_rectangle(x, y + 2.0, TILE, 9.0, p.plank_dark);
+        draw_rectangle(x, y, TILE, 8.0, p.plank);
+        for i in 0..3 {
+            draw_circle(x + 5.0 + i as f32 * 11.0, y + 4.0, 5.5, p.plank);
+        }
+        if edge_l {
+            draw_circle(x + 2.0, y + 5.0, 6.0, p.plank);
+        }
+        if edge_r {
+            draw_circle(x + TILE - 2.0, y + 5.0, 6.0, p.plank);
+        }
+        return;
     }
-    if g.lv.tile(tx + 1, ty) != Tile::OneWay {
-        draw_rectangle(x + TILE - 2.0, y, 2.0, 11.0, WOOD_DARK);
+    draw_rectangle(x, y, TILE, 11.0, p.plank);
+    draw_rectangle(x, y, TILE, 3.0, p.plank_light);
+    draw_rectangle(x, y + 9.0, TILE, 2.0, p.plank_dark);
+    if g.lv.theme == Theme::Factory {
+        // wafer grid
+        for k in 0..4 {
+            draw_line(x + 4.0 + k as f32 * 8.0, y + 3.0, x + 4.0 + k as f32 * 8.0, y + 9.0, 1.0, p.plank_dark);
+        }
+    } else {
+        draw_circle(x + 6.0, y + 6.0, 1.3, p.plank_dark);
+        draw_circle(x + 26.0, y + 6.0, 1.3, p.plank_dark);
+    }
+    if edge_l {
+        draw_rectangle(x, y, 2.0, 11.0, p.plank_dark);
+    }
+    if edge_r {
+        draw_rectangle(x + TILE - 2.0, y, 2.0, 11.0, p.plank_dark);
     }
 }
 
@@ -304,18 +597,121 @@ fn draw_spikes(x: f32, y: f32, up: bool) {
     }
 }
 
+fn draw_spring(g: &Game, tx: i32, ty: i32, x: f32, y: f32) {
+    let p = pal(g.lv.theme);
+    let t = g.spring_anims.iter().find(|s| s.0 == (tx, ty)).map(|s| s.1);
+    // squash right after launching, then wobble
+    let k = t.map_or(0.0, |t| (t * 30.0).sin() * (-t * 7.0).exp());
+    let wob = (g.t * 4.0 + tx as f32).sin() * 0.6;
+    draw_rectangle(x + 1.0, y + 14.0, TILE - 2.0, TILE - 14.0, p.plank_dark);
+    draw_rectangle(x + 3.0, y + 16.0, TILE - 6.0, TILE - 18.0, p.plank);
+    draw_rectangle(x + 3.0, y + 16.0, TILE - 6.0, 3.0, p.plank_light);
+    let top = y + 2.0 + k * 6.0 + wob;
+    let h = y + 16.0 - top;
+    draw_rectangle(x + 2.0, top + h * 0.45, TILE - 4.0, h * 0.55 + 1.0, JELLY_PINK);
+    draw_ellipse(x + TILE / 2.0, top + h * 0.45, TILE / 2.0 - 2.0, h * 0.45, 0.0, JELLY_PINK);
+    draw_ellipse(x + 10.0, top + h * 0.3, 4.5, 2.2, -15.0, JELLY_LIGHT);
+    draw_circle(x + 21.0, top + h * 0.5, 1.6, JELLY_LIGHT);
+}
+
+fn draw_fan(g: &Game, x: f32, y: f32) {
+    let p = pal(g.lv.theme);
+    draw_rectangle(x, y, TILE, TILE, p.stone_dark);
+    draw_rectangle(x + 2.0, y + 8.0, TILE - 4.0, TILE - 10.0, p.stone);
+    for k in 0..3 {
+        draw_rectangle(x + 5.0, y + 14.0 + k as f32 * 5.0, TILE - 10.0, 2.0, p.stone_mid);
+    }
+    // spinning blades seen from the side
+    let a = g.t * 22.0;
+    draw_rectangle(x + 1.0, y + 2.0, TILE - 2.0, 6.0, rgb(70, 76, 96));
+    for k in 0..3 {
+        let ph = a + k as f32 * 2.094;
+        let bx = x + TILE / 2.0 + ph.cos() * 11.0;
+        let w = 3.0 + ph.sin().abs() * 5.0;
+        draw_ellipse(bx, y + 4.0, w, 2.2, 0.0, rgb(200, 230, 255));
+    }
+    draw_circle(x + TILE / 2.0, y + 4.0, 2.4, rgb(255, 214, 90));
+}
+
+fn draw_box(g: &Game, tx: i32, ty: i32, x: f32, y: f32, heart: bool) {
+    let i = g.lv.idx(tx, ty).unwrap();
+    let used = g.box_used[i];
+    let bump = g.box_bumps.iter().find(|b| b.0 == i).map_or(0.0, |b| (b.1 / 0.25 * std::f32::consts::PI).sin() * 7.0);
+    let y = y - bump;
+    if used {
+        draw_rectangle(x, y, TILE, TILE, rgb(150, 104, 64));
+        draw_rectangle(x + 2.0, y + 2.0, TILE - 4.0, TILE - 4.0, rgb(184, 132, 84));
+        for (ox, oy) in [(6.0, 6.0), (26.0, 6.0), (6.0, 26.0), (26.0, 26.0)] {
+            draw_circle(x + ox, y + oy, 1.5, rgb(130, 88, 54));
+        }
+        return;
+    }
+    draw_rectangle(x, y, TILE, TILE, COOKIE_DARK);
+    draw_rectangle(x + 2.0, y + 2.0, TILE - 4.0, TILE - 4.0, COOKIE);
+    draw_rectangle(x + 2.0, y + 2.0, TILE - 4.0, 3.0, rgb(255, 228, 170));
+    // biscuit holes
+    for (ox, oy) in [(6.0, 6.0), (26.0, 6.0), (6.0, 26.0), (26.0, 26.0)] {
+        draw_circle(x + ox, y + oy, 1.5, COOKIE_DARK);
+    }
+    let pulse = 1.0 + (g.t * 5.0).sin() * 0.08;
+    let c = vec2(x + TILE / 2.0, y + TILE / 2.0 + 1.0);
+    if heart {
+        draw_heart(c, 8.0 * pulse, HEART, HEART_DARK);
+    } else {
+        draw_orange(c, 7.0 * pulse);
+    }
+}
+
+fn draw_slide(g: &Game, tx: i32, ty: i32, x: f32, y: f32) {
+    let p = pal(g.lv.theme);
+    let right = g.lv.tile(tx, ty) == Tile::SlideR;
+    // ground under the slope
+    let (a, b, c) = if right {
+        (vec2(x, y), vec2(x, y + TILE), vec2(x + TILE, y + TILE))
+    } else {
+        (vec2(x + TILE, y), vec2(x + TILE, y + TILE), vec2(x, y + TILE))
+    };
+    draw_triangle(a, b, c, p.fill);
+    // the slide track along the diagonal
+    let (s0, s1) = if right { (vec2(x, y), vec2(x + TILE, y + TILE)) } else { (vec2(x, y + TILE), vec2(x + TILE, y)) };
+    let n = vec2(0.0, 7.0);
+    draw_triangle(s0, s1, s1 + n, rgb(255, 160, 60));
+    draw_triangle(s0, s1 + n, s0 + n, rgb(255, 160, 60));
+    draw_line(s0.x, s0.y, s1.x, s1.y, 2.5, rgb(255, 236, 190));
+    draw_line(s0.x, s0.y + 7.0, s1.x, s1.y + 7.0, 1.5, rgb(214, 104, 20));
+    for k in 0..2 {
+        let f = 0.25 + k as f32 * 0.5;
+        let m = s0 + (s1 - s0) * f + vec2(0.0, 3.5);
+        draw_circle(m.x, m.y, 1.6, rgb(255, 255, 255));
+    }
+}
+
+fn draw_sign(g: &Game, x: f32, y: f32, n: u8) {
+    let near = g.sign.is_some_and(|s| s.0 == n);
+    let wood = rgb(198, 140, 80);
+    let bob = if near { (g.t * 6.0).sin() * 1.0 } else { 0.0 };
+    draw_rectangle(x + 14.0, y + 14.0, 4.0, 18.0, rgb(146, 98, 54));
+    draw_rectangle(x + 3.0, y + 2.0 + bob, 26.0, 16.0, rgb(146, 98, 54));
+    draw_rectangle(x + 4.5, y + 3.5 + bob, 23.0, 13.0, wood);
+    draw_rectangle(x + 4.5, y + 3.5 + bob, 23.0, 2.5, rgb(232, 182, 116));
+    // "!" mark
+    let col = if near { rgb(255, 120, 40) } else { INK };
+    draw_rectangle(x + 14.8, y + 5.5 + bob, 2.4, 6.0, col);
+    draw_circle(x + 16.0, y + 14.0 + bob, 1.4, col);
+}
+
 pub fn draw_tiles(g: &Game) {
     let lv = &g.lv;
     let c0 = (g.cam.x / TILE).floor() as i32 - 1;
     let c1 = ((g.cam.x + g.view_w) / TILE).ceil() as i32 + 1;
     let r0 = (g.cam.y / TILE).floor() as i32 - 1;
     let r1 = ((g.cam.y + VIEW_H) / TILE).ceil() as i32 + 1;
-    for ty in r0..=r1.min(lv.h - 1) {
+    for ty in r0.max(0)..=r1.min(lv.h - 1) {
         for tx in c0.max(0)..=c1.min(lv.w - 1) {
             let (x, y) = (tx as f32 * TILE, ty as f32 * TILE);
             match lv.tile(tx, ty) {
-                Tile::Ground => draw_ground(g, tx, ty, x, y),
-                Tile::Stone => draw_stone(x, y),
+                Tile::Ground => draw_ground(g, tx, ty, 1.0),
+                Tile::Stone => draw_stone(lv.theme, x, y),
                 Tile::OneWay => draw_oneway(g, tx, ty, x, y),
                 Tile::SpikeUp => draw_spikes(x, y, true),
                 Tile::SpikeDown => draw_spikes(x, y, false),
@@ -330,7 +726,7 @@ pub fn draw_tiles(g: &Game) {
                         Crumble::Solid => draw_cookie(x, y, 0.0, 1.0, tx, ty),
                         Crumble::Shaking(t) => {
                             let k = t / CRUMBLE_DELAY;
-                            let j = (g.t * 90.0).sin() * (0.6 + k * 1.6);
+                            let j = (g.t * 90.0).sin() * (0.4 + k * 1.6);
                             draw_cookie(x + j, y + k * 1.5, k, 1.0, tx, ty);
                         }
                         Crumble::Gone(t) => {
@@ -339,15 +735,78 @@ pub fn draw_tiles(g: &Game) {
                         }
                     }
                 }
-                Tile::Empty | Tile::Bumper => {}
+                Tile::Spring => draw_spring(g, tx, ty, x, y),
+                Tile::Fan => draw_fan(g, x, y),
+                Tile::BoxOrange => draw_box(g, tx, ty, x, y, false),
+                Tile::BoxHeart => draw_box(g, tx, ty, x, y, true),
+                Tile::SlideR | Tile::SlideL => draw_slide(g, tx, ty, x, y),
+                Tile::Sign(n) => draw_sign(g, x, y, n),
+                Tile::Empty | Tile::Bumper | Tile::Fake => {}
             }
         }
     }
-    // decorations on top of grass
+    // decorations on top of exposed ground
     for ty in r0.max(1)..=r1.min(lv.h - 1) {
         for tx in c0.max(0)..=c1.min(lv.w - 1) {
             if lv.tile(tx, ty) == Tile::Ground && lv.tile(tx, ty - 1) == Tile::Empty {
-                draw_decor(g, tx, ty, tx as f32 * TILE, ty as f32 * TILE);
+                draw_decor(g, tx, ty);
+            }
+        }
+    }
+}
+
+/// Fake walls are drawn after the player so they hide the secret room until it is revealed.
+fn draw_fake_tiles(g: &Game) {
+    let lv = &g.lv;
+    if lv.fake_groups == 0 {
+        return;
+    }
+    let c0 = (g.cam.x / TILE).floor() as i32 - 1;
+    let c1 = ((g.cam.x + g.view_w) / TILE).ceil() as i32 + 1;
+    let r0 = (g.cam.y / TILE).floor() as i32 - 1;
+    let r1 = ((g.cam.y + VIEW_H) / TILE).ceil() as i32 + 1;
+    for ty in r0.max(0)..=r1.min(lv.h - 1) {
+        for tx in c0.max(0)..=c1.min(lv.w - 1) {
+            // fake ground, plus springs/spikes sitting in a secret room's floor (they'd give it away)
+            let t = lv.tile(tx, ty);
+            let owner = if t == Tile::Fake {
+                Some((tx, ty))
+            } else if matches!(t, Tile::Spring | Tile::SpikeUp) && lv.tile(tx, ty - 1) == Tile::Fake {
+                Some((tx, ty - 1))
+            } else {
+                None
+            };
+            if let Some((ox, oy)) = owner {
+                let grp = lv.fake_group[lv.idx(ox, oy).unwrap()] as usize;
+                let a = 1.0 - g.reveal[grp] * 0.75;
+                draw_ground(g, tx, ty, a);
+            }
+        }
+    }
+}
+
+/// Rising air above fans.
+fn draw_wind(g: &Game) {
+    let lv = &g.lv;
+    let c0 = ((g.cam.x / TILE).floor() as i32 - 1).max(0);
+    let c1 = (((g.cam.x + g.view_w) / TILE).ceil() as i32 + 1).min(lv.w - 1);
+    let r0 = ((g.cam.y / TILE).floor() as i32 - 1).max(0);
+    let r1 = (((g.cam.y + VIEW_H) / TILE).ceil() as i32 + 1).min(lv.h - 1);
+    for tx in c0..=c1 {
+        for ty in r0..=r1 {
+            if !lv.wind_at(tx, ty) {
+                continue;
+            }
+            let (x, y) = (tx as f32 * TILE, ty as f32 * TILE);
+            draw_rectangle(x, y, TILE, TILE, rgba(255, 255, 255, 28));
+            for k in 0..2 {
+                let h = hash(tx, k);
+                let sx = x + 6.0 + ((h >> 3) % 20) as f32;
+                let off = (g.t * 150.0 + (h % 64) as f32) % (TILE * 2.0);
+                let sy = y + TILE * 2.0 - off - TILE / 2.0;
+                if sy > y - 2.0 && sy < y + TILE {
+                    draw_line(sx, sy, sx, sy + 9.0, 1.5, rgba(255, 255, 255, 140));
+                }
             }
         }
     }
@@ -355,12 +814,21 @@ pub fn draw_tiles(g: &Game) {
 
 // ------------------------------------------------------------------------------------------ objects
 
-pub fn draw_orange(c: Vec2, r: f32) {
+pub fn draw_orange_rot(c: Vec2, r: f32, rot: f32) {
     draw_circle(c.x, c.y + 1.0, r + 1.2, ORANGE_DARK);
     draw_circle(c.x, c.y, r, ORANGE);
     draw_circle(c.x - r * 0.35, c.y - r * 0.35, r * 0.38, ORANGE_LIGHT);
-    draw_rectangle(c.x - 0.8, c.y - r - 2.5, 1.6, 3.5, rgb(110, 80, 40));
-    draw_ellipse(c.x + 3.0, c.y - r - 1.5, r * 0.5, r * 0.24, -25.0, LEAF);
+    let (s, co) = rot.sin_cos();
+    let up = vec2(s, -co);
+    let stem = c + up * (r + 1.0);
+    draw_line(c.x + up.x * (r - 1.0), c.y + up.y * (r - 1.0), stem.x, stem.y, 1.6, rgb(110, 80, 40));
+    let side = vec2(co, s);
+    let leaf = stem + side * 3.0;
+    draw_ellipse(leaf.x, leaf.y, r * 0.5, r * 0.24, rot.to_degrees() - 25.0, LEAF);
+}
+
+pub fn draw_orange(c: Vec2, r: f32) {
+    draw_orange_rot(c, r, 0.0);
 }
 
 pub fn draw_golden(c: Vec2, r: f32, t: f32) {
@@ -390,7 +858,7 @@ fn draw_items(g: &Game) {
         if it.taken {
             continue;
         }
-        let bob = (g.t * 3.0 + it.pos.x * 0.05).sin() * 2.0;
+        let bob = if it.falling { 0.0 } else { (g.t * 3.0 + it.pos.x * 0.05).sin() * 2.0 };
         let p = it.pos + vec2(0.0, bob);
         match it.kind {
             ItemKind::Orange => draw_orange(p, 7.0),
@@ -399,15 +867,25 @@ fn draw_items(g: &Game) {
                 draw_bubble(p, 11.0, g.t);
                 draw_circle(p.x, p.y + 1.0, 4.5, rgba(255, 255, 255, 160));
             }
+            ItemKind::Heart => {
+                let pulse = 1.0 + (g.t * 6.0).sin() * 0.07;
+                draw_circle(p.x, p.y, 15.0, rgba(255, 150, 170, 60));
+                draw_heart(p, 10.0 * pulse, HEART, HEART_DARK);
+            }
         }
+    }
+    for t in &g.thrown {
+        let c = t.pos + vec2(THROWN_SIZE / 2.0, THROWN_SIZE / 2.0);
+        draw_orange_rot(c, 6.0, t.spin);
     }
 }
 
 fn draw_checkpoints(g: &Game) {
+    let p = pal(g.lv.theme);
     for cp in &g.checkpoints {
         let b = cp.pos;
-        draw_rectangle(b.x - 9.0, b.y - 6.0, 18.0, 6.0, STONE_DARK);
-        draw_rectangle(b.x - 7.0, b.y - 8.0, 14.0, 3.0, STONE);
+        draw_rectangle(b.x - 9.0, b.y - 6.0, 18.0, 6.0, p.stone_dark);
+        draw_rectangle(b.x - 7.0, b.y - 8.0, 14.0, 3.0, p.stone);
         draw_rectangle(b.x - 2.0, b.y - 60.0, 4.0, 54.0, rgb(240, 236, 228));
         let top = b.y - 58.0;
         let wave = (g.t * 6.0).sin() * 3.0;
@@ -425,15 +903,14 @@ fn draw_goal(g: &Game) {
     let x0 = gx as f32 * TILE;
     let bottom = (gy + 1) as f32 * TILE;
     let cream = rgb(250, 244, 230);
-    // shimmering doorway
     let shimmer = (g.t * 3.0).sin() * 0.5 + 0.5;
     draw_rectangle(x0 + 20.0, bottom - 118.0, 56.0, 118.0, rgba(255, 240, 180, (60.0 + shimmer * 50.0) as u8));
-    for (px, _) in [(x0 + 4.0, 0), (x0 + 76.0, 1)] {
+    for px in [x0 + 4.0, x0 + 76.0] {
         draw_rectangle(px, bottom - 122.0, 16.0, 122.0, cream);
         for k in 0..4 {
             draw_rectangle(px, bottom - 110.0 + k as f32 * 28.0, 16.0, 9.0, ORANGE);
         }
-        draw_rectangle(px - 2.0, bottom - 8.0, 20.0, 8.0, STONE_DARK);
+        draw_rectangle(px - 2.0, bottom - 8.0, 20.0, 8.0, pal(g.lv.theme).stone_dark);
     }
     draw_rectangle(x0, bottom - 136.0, 96.0, 20.0, ORANGE_DARK);
     draw_rectangle(x0 + 2.0, bottom - 134.0, 92.0, 15.0, ORANGE);
@@ -446,7 +923,6 @@ fn draw_goal(g: &Game) {
 fn draw_plats(g: &Game) {
     for p in &g.plats {
         let r = p.rect;
-        // little hover glow
         draw_ellipse(r.x + r.w / 2.0, r.y + r.h + 3.0, r.w * 0.4, 3.0, 0.0, rgba(120, 230, 255, 90));
         draw_rectangle(r.x, r.y, r.w, r.h, rgb(60, 120, 140));
         draw_rectangle(r.x + 1.5, r.y + 1.5, r.w - 3.0, r.h - 3.0, rgb(96, 172, 192));
@@ -456,7 +932,6 @@ fn draw_plats(g: &Game) {
             let sx = r.x + 8.0 + k as f32 * 16.0;
             draw_circle(sx, r.y + 10.0, 1.6, rgb(50, 100, 120));
         }
-        // direction arrow
         let c = vec2(r.x + r.w / 2.0, r.y + 10.0);
         let d = if p.vel.length_squared() > 0.0 { p.vel.normalize() } else { vec2(1.0, 0.0) };
         let n2 = vec2(-d.y, d.x);
@@ -490,10 +965,8 @@ fn draw_enemy(e: &Enemy, t: f32) {
         }
         EKind::Hedgehog => {
             let step = (t * 14.0 + r.x * 0.2).sin();
-            // feet
             draw_rectangle(cx - 8.0 + step * 1.5, bottom - 4.0, 5.0, 4.0, rgb(70, 44, 30));
             draw_rectangle(cx + 4.0 - step * 1.5, bottom - 4.0, 5.0, 4.0, rgb(70, 44, 30));
-            // spikes along the back
             for k in 0..6 {
                 let a = std::f32::consts::PI * (0.08 + 0.84 * k as f32 / 5.0);
                 let base = vec2(cx - a.cos() * 11.0 * -dir, bottom - 9.0 - a.sin() * 9.0);
@@ -515,7 +988,7 @@ fn draw_enemy(e: &Enemy, t: f32) {
                 return;
             }
             let (sx, sy) = if e.on_ground {
-                let charge = (e.timer / 1.25).clamp(0.0, 1.0);
+                let charge = (e.timer / 1.5).clamp(0.0, 1.0);
                 (1.0 + charge * 0.12, 1.0 - charge * 0.12)
             } else {
                 (0.85, 1.18)
@@ -545,6 +1018,20 @@ fn draw_enemy(e: &Enemy, t: f32) {
     }
 }
 
+/// The orange on Lulu's cap turns into a leaf propeller while gliding.
+fn draw_propeller(top: Vec2, a: f32, alpha: f32) {
+    let rod = rgba(110, 80, 40, (alpha * 255.0) as u8);
+    draw_line(top.x, top.y + 4.0, top.x, top.y - 3.0, 2.0, rod);
+    for k in 0..2 {
+        let ph = a + k as f32 * std::f32::consts::PI;
+        let reach = ph.cos() * 15.0;
+        let depth = ph.sin();
+        let col = if depth > 0.0 { rgb(96, 190, 72) } else { rgb(70, 150, 56) };
+        draw_ellipse(top.x + reach / 2.0, top.y - 3.0, reach.abs() / 2.0 + 1.5, 3.2, 0.0, with_a(col, alpha));
+    }
+    draw_circle(top.x, top.y - 3.0, 2.6, with_a(ORANGE, alpha));
+}
+
 fn draw_player(g: &Game, a: &Assets) {
     let aspect = a.lulu.width() / a.lulu.height();
     if !g.alive {
@@ -567,7 +1054,6 @@ fn draw_player(g: &Game, a: &Assets) {
     let breathe = if b.on_ground && b.vel.x.abs() < 5.0 { (g.t * 3.0).sin() * 0.015 } else { 0.0 };
     let h = SPRITE_H * (an.scale.y + breathe);
     let w = SPRITE_H * aspect * (an.scale.x - breathe * 0.5);
-    // soft shadow
     if b.on_ground {
         draw_ellipse(b.pos.x + PW / 2.0, b.pos.y + PH, 13.0, 3.0, 0.0, rgba(0, 0, 0, 45));
     }
@@ -578,6 +1064,12 @@ fn draw_player(g: &Game, a: &Assets) {
         color,
         DrawTextureParams { dest_size: Some(vec2(w, h)), rotation: an.tilt, pivot: Some(feet), flip_x: b.facing < 0.0, ..Default::default() },
     );
+    if an.prop_speed > 1.0 {
+        let (s, c) = an.tilt.sin_cos();
+        let up = vec2(s, -c);
+        let top = feet + up * (h - 3.0);
+        draw_propeller(top, an.prop, color.a.max(0.6));
+    }
     if g.shield {
         let c = b.center() + vec2(0.0, -4.0);
         draw_bubble(c, 30.0, g.t);
@@ -594,12 +1086,13 @@ fn draw_particles(g: &Game) {
 /// Draw the whole world (background, tiles, objects, player) from the game's camera.
 pub fn draw_world(g: &Game, a: &Assets) {
     let level_h = g.lv.h as f32 * TILE;
-    draw_background(g.cam, g.view_w, level_h, g.t);
+    draw_background(g.lv.theme, g.cam, g.view_w, level_h, g.t);
     let mut cam = g.cam;
     if g.shake > 0.0 {
         cam += vec2((g.t * 97.0).sin(), (g.t * 131.0).cos()) * g.shake * 12.0;
     }
     set_camera(&world_cam(cam.x, cam.y, g.view_w));
+    draw_wind(g);
     draw_goal(g);
     draw_checkpoints(g);
     draw_tiles(g);
@@ -611,6 +1104,7 @@ pub fn draw_world(g: &Game, a: &Assets) {
         }
     }
     draw_player(g, a);
+    draw_fake_tiles(g);
     draw_particles(g);
 }
 
@@ -649,36 +1143,30 @@ pub fn fmt_time(t: f32) -> String {
     format!("{m}:{s:05.2}")
 }
 
-pub fn draw_hud(g: &Game) {
-    set_default_camera();
-    let u = ui_scale();
-    let panel = rgba(30, 20, 40, 110);
-    draw_rectangle(8.0 * u, 8.0 * u, 150.0 * u, 26.0 * u, panel);
-    draw_orange(vec2(21.0 * u, 21.0 * u), 6.5 * u);
-    text(&format!("{}/{}", g.oranges, g.orange_total), 32.0 * u, 26.0 * u, 15.0 * u, WHITE);
-    for k in 0..3 {
-        let c = vec2((100.0 + k as f32 * 18.0) * u, 21.0 * u);
-        if (k as u32) < g.goldens {
-            draw_golden_icon(c, 6.5 * u);
-        } else {
-            draw_circle_lines(c.x, c.y, 6.5 * u, 1.5 * u, rgba(255, 230, 150, 160));
+/// Rounded rectangle as one triangle fan, so translucent colours have no overlapping seams.
+fn rounded_rect(x: f32, y: f32, w: f32, h: f32, r: f32, color: Color) {
+    let r = r.min(w / 2.0).min(h / 2.0);
+    let mut vertices = vec![Vertex::new(x + w / 2.0, y + h / 2.0, 0.0, 0.0, 0.0, color)];
+    let corners = [(x + w - r, y + r, -90.0f32), (x + w - r, y + h - r, 0.0), (x + r, y + h - r, 90.0), (x + r, y + r, 180.0)];
+    for (cx, cy, a0) in corners {
+        for k in 0..=6 {
+            let a = (a0 + k as f32 * 15.0).to_radians();
+            vertices.push(Vertex::new(cx + a.cos() * r, cy + a.sin() * r, 0.0, 0.0, 0.0, color));
         }
     }
-    if g.shield {
-        draw_bubble(vec2(170.0 * u, 21.0 * u), 9.0 * u, g.t);
+    let n = vertices.len() as u16 - 1;
+    let mut indices = vec![];
+    for i in 1..=n {
+        indices.extend_from_slice(&[0, i, if i == n { 1 } else { i + 1 }]);
     }
+    draw_mesh(&Mesh { vertices, indices, texture: None });
+}
 
-    let sw = screen_width();
-    draw_rectangle(sw - 168.0 * u, 8.0 * u, 160.0 * u, 26.0 * u, panel);
-    let s = format!("DEATHS {:<3}  {}", g.deaths, fmt_time(g.time));
-    let d = measure_text(&s, None, (14.0 * u) as u16, 1.0);
-    text(&s, sw - 16.0 * u - d.width, 26.0 * u, 14.0 * u, WHITE);
-
-    if let Some((msg, t)) = g.toast {
-        let a = (t / 0.4).min(1.0);
-        let rise = (1.6 - t).min(0.25) * 40.0;
-        text_outline_center(msg, sw / 2.0, (90.0 - rise) * u, 26.0 * u, Color::new(1.0, 0.95, 0.7, a), Color::new(0.75, 0.35, 0.05, a));
-    }
+/// Restrict drawing to a screen rectangle (logical pixels), or lift the restriction.
+fn clip(r: Option<(f32, f32, f32, f32)>) {
+    let s = screen_dpi_scale();
+    let gl = unsafe { get_internal_gl() }.quad_gl;
+    gl.scissor(r.map(|(x, y, w, h)| ((x * s) as i32, (y * s) as i32, (w * s).ceil() as i32, (h * s).ceil() as i32)));
 }
 
 fn draw_golden_icon(c: Vec2, r: f32) {
@@ -687,73 +1175,230 @@ fn draw_golden_icon(c: Vec2, r: f32) {
     draw_circle(c.x - r * 0.35, c.y - r * 0.35, r * 0.4, GOLD_LIGHT);
 }
 
+fn golden_slots(c: Vec2, r: f32, gap: f32, mask_or_count: impl Fn(u32) -> bool) {
+    for k in 0..3u32 {
+        let p = c + vec2(k as f32 * gap, 0.0);
+        if mask_or_count(k) {
+            draw_golden_icon(p, r);
+        } else {
+            draw_circle_lines(p.x, p.y, r, r * 0.22, rgba(255, 230, 150, 170));
+        }
+    }
+}
+
+/// Speech bubble above a sign (screen space).
+fn draw_sign_bubble(g: &Game, n: u8, world: Vec2) {
+    let msg = g.lv.sign_text(n);
+    if msg.is_empty() {
+        return;
+    }
+    let u = ui_scale();
+    let lines: Vec<&str> = msg.split('|').map(|s| s.trim()).collect();
+    let size = 12.0 * u;
+    let w = lines.iter().map(|l| measure_text(l, None, size as u16, 1.0).width).fold(0.0, f32::max) + 18.0 * u;
+    let h = lines.len() as f32 * 15.0 * u + 10.0 * u;
+    let sx = ((world.x - g.cam.x) * u).clamp(w / 2.0 + 6.0 * u, screen_width() - w / 2.0 - 6.0 * u);
+    let sy = (world.y - g.cam.y) * u - 22.0 * u;
+    let (x, y) = (sx - w / 2.0, sy - h);
+    rounded_rect(x + 2.0 * u, y + 3.0 * u, w, h, 7.0 * u, rgba(0, 0, 0, 60));
+    rounded_rect(x, y, w, h, 7.0 * u, rgba(255, 251, 238, 245));
+    let tip = vec2(((world.x - g.cam.x) * u).clamp(x + 12.0 * u, x + w - 12.0 * u), sy + 8.0 * u);
+    draw_triangle(vec2(tip.x - 7.0 * u, sy - 1.0), vec2(tip.x + 7.0 * u, sy - 1.0), tip, rgba(255, 251, 238, 245));
+    for (i, l) in lines.iter().enumerate() {
+        let d = measure_text(l, None, size as u16, 1.0);
+        draw_text_ex(l, sx - d.width / 2.0, y + (16.0 + i as f32 * 15.0) * u, TextParams { font_size: size as u16, color: INK, ..Default::default() });
+    }
+}
+
+pub fn draw_hud(g: &Game) {
+    set_default_camera();
+    let u = ui_scale();
+    let panel = rgba(30, 20, 40, 110);
+    rounded_rect(8.0 * u, 8.0 * u, 214.0 * u, 26.0 * u, 6.0 * u, panel);
+    for k in 0..MAX_HEARTS {
+        let c = vec2((22.0 + k as f32 * 19.0) * u, 21.0 * u);
+        if k < g.hearts {
+            draw_heart(c, 7.0 * u, HEART, HEART_DARK);
+        } else {
+            draw_heart(c, 7.0 * u, rgba(90, 70, 90, 200), rgba(60, 40, 60, 200));
+        }
+    }
+    draw_orange(vec2(88.0 * u, 21.0 * u), 6.5 * u);
+    text(&format!("x{}", g.oranges), 98.0 * u, 26.5 * u, 15.0 * u, WHITE);
+    golden_slots(vec2(170.0 * u, 21.0 * u), 6.5 * u, 18.0 * u, |k| g.golden_mask & (1 << k) != 0);
+    if g.shield {
+        draw_bubble(vec2(236.0 * u, 21.0 * u), 9.0 * u, g.t);
+    }
+
+    let sw = screen_width();
+    let s = format!("{}   {}", g.lv.name.to_uppercase(), fmt_time(g.time));
+    let d = measure_text(&s, None, (14.0 * u) as u16, 1.0);
+    rounded_rect(sw - d.width - 26.0 * u, 8.0 * u, d.width + 18.0 * u, 26.0 * u, 6.0 * u, panel);
+    text(&s, sw - 17.0 * u - d.width, 26.0 * u, 14.0 * u, WHITE);
+
+    if let Some((n, pos)) = g.sign {
+        if g.alive && !g.cleared {
+            draw_sign_bubble(g, n, pos);
+        }
+    }
+
+    if let Some((msg, t)) = g.toast {
+        let a = (t / 0.4).min(1.0);
+        let rise = (1.6 - t).min(0.25) * 40.0;
+        text_outline_center(msg, sw / 2.0, (90.0 - rise) * u, 26.0 * u, Color::new(1.0, 0.95, 0.7, a), Color::new(0.75, 0.35, 0.05, a));
+    }
+}
+
 pub fn dim(a: f32) {
     set_default_camera();
     draw_rectangle(0.0, 0.0, screen_width(), screen_height(), Color::new(0.08, 0.05, 0.12, a));
 }
 
 /// Title backdrop: slowly scrolling sky + hills and a flat meadow to stand on.
-pub fn draw_title_scene(t: f32, view_w: f32, level_h: f32) {
+pub fn draw_title_scene(t: f32, view_w: f32) {
+    let level_h = TITLE_LEVEL_H;
     let cam = vec2(t * 25.0, level_h - VIEW_H);
-    draw_background(cam, view_w, level_h, t);
+    draw_background(Theme::Meadow, cam, view_w, level_h, t);
     set_camera(&world_cam(0.0, cam.y, view_w));
+    let p = &MEADOW;
     let top = TITLE_GROUND_Y;
-    draw_rectangle(-10.0, top, view_w + 20.0, 400.0, DIRT);
+    draw_rectangle(-10.0, top, view_w + 20.0, 400.0, p.fill);
     let cols = (view_w / TILE) as i32 + 2;
     for c in 0..cols {
         let x = c as f32 * TILE;
         for k in 0..6 {
             let h = hash(c, k);
-            draw_circle(x + (h % 30) as f32, top + 20.0 + ((h >> 8) % 70) as f32, 2.4, DIRT_SPECK);
+            draw_circle(x + (h % 30) as f32, top + 20.0 + ((h >> 8) % 70) as f32, 2.4, p.speck);
         }
         if hash(c, 99) % 3 == 0 {
             let h = hash(c, 7);
             let fx = x + (h % 24) as f32;
-            draw_line(fx, top, fx, top - 9.0, 1.5, GRASS_DARK);
+            draw_line(fx, top, fx, top - 9.0, 1.5, p.top_dark);
             draw_circle(fx, top - 10.0, 2.6, [rgb(255, 120, 150), rgb(255, 220, 90), WHITE][(h >> 4) as usize % 3]);
         }
     }
-    draw_rectangle(-10.0, top + 9.0, view_w + 20.0, 4.0, DIRT_DARK);
-    draw_rectangle(-10.0, top, view_w + 20.0, 9.0, GRASS);
+    draw_rectangle(-10.0, top + 9.0, view_w + 20.0, 4.0, p.fill_dark);
+    draw_rectangle(-10.0, top, view_w + 20.0, 9.0, p.top);
     for i in 0..(view_w / 8.0) as i32 + 2 {
-        draw_circle(i as f32 * 8.0, top + 9.0, 4.5, GRASS);
+        draw_circle(i as f32 * 8.0, top + 9.0, 4.5, p.top);
     }
-    draw_rectangle(-10.0, top, view_w + 20.0, 3.0, GRASS_LIGHT);
+    draw_rectangle(-10.0, top, view_w + 20.0, 3.0, p.top_light);
 }
 
+const TITLE_LEVEL_H: f32 = 20.0 * TILE;
 const TITLE_GROUND_Y: f32 = 17.0 * TILE;
 
-pub fn draw_title(a: &Assets, t: f32, blink: bool, level_h: f32) {
+pub fn draw_title(a: &Assets, t: f32, blink: bool) {
     set_default_camera();
     let u = ui_scale();
     let sw = screen_width();
-    // big Lulu, bouncing on the meadow
     let hop = ((t * 2.2).sin().abs()) * 14.0 * u;
     let squash = 1.0 + ((t * 4.4).cos()) * 0.025;
     let h = 230.0 * u * squash;
     let w = h * a.lulu_title.width() / a.lulu_title.height() / squash / squash;
     let cx = sw / 2.0 + 150.0 * u;
-    let base = (TITLE_GROUND_Y - (level_h - VIEW_H)) * u + 4.0 * u;
+    let base = (TITLE_GROUND_Y - (TITLE_LEVEL_H - VIEW_H)) * u + 4.0 * u;
     draw_ellipse(cx, base, 60.0 * u, 9.0 * u, 0.0, rgba(0, 0, 0, 50));
     draw_texture_ex(&a.lulu_title, cx - w / 2.0, base - h - hop, WHITE, DrawTextureParams { dest_size: Some(vec2(w, h)), ..Default::default() });
 
     let tx = sw / 2.0 - 120.0 * u;
-    text_outline_center("SUPER", tx, 92.0 * u, 52.0 * u, rgb(255, 246, 220), rgb(214, 104, 20));
-    text_outline_center("LULU", tx, 150.0 * u, 72.0 * u, rgb(255, 196, 60), rgb(150, 70, 20));
-    text_center("~ a tough little adventure ~", tx, 176.0 * u, 13.0 * u, rgb(255, 255, 255));
+    text_outline_center("SUPER", tx, 84.0 * u, 52.0 * u, rgb(255, 246, 220), rgb(214, 104, 20));
+    text_outline_center("LULU", tx, 142.0 * u, 72.0 * u, rgb(255, 196, 60), rgb(150, 70, 20));
+    text_center("~ a sweet little adventure ~", tx, 166.0 * u, 13.0 * u, rgb(255, 255, 255));
     if blink {
-        text_outline_center("PRESS ENTER", tx, 222.0 * u, 22.0 * u, WHITE, rgb(60, 110, 200));
+        text_outline_center("PRESS ENTER", tx, 204.0 * u, 22.0 * u, WHITE, rgb(60, 110, 200));
     }
     text("ESC quit", 10.0 * u, VIEW_H * u - 10.0 * u, 11.0 * u, rgba(255, 255, 255, 200));
     let lines = [
         "ARROWS / A D ...... move",
         "Z / SPACE / K ..... jump (hold = higher)",
+        "  again in the air  glide (keep holding)",
         "X / SHIFT / J ..... run",
-        "R retry   ESC pause   M mute   F11 full",
+        "C / L ............. throw an orange",
+        "R retry  ESC pause  M mute  F11 full",
     ];
-    draw_rectangle(tx - 150.0 * u, 238.0 * u, 300.0 * u, 74.0 * u, rgba(30, 20, 40, 120));
+    rounded_rect(tx - 150.0 * u, 218.0 * u, 300.0 * u, 106.0 * u, 8.0 * u, rgba(30, 20, 40, 120));
     for (i, l) in lines.iter().enumerate() {
-        text(l, tx - 138.0 * u, (256.0 + i as f32 * 16.0) * u, 13.0 * u, rgb(255, 250, 235));
+        text(l, tx - 138.0 * u, (236.0 + i as f32 * 16.0) * u, 13.0 * u, rgb(255, 250, 235));
+    }
+}
+
+/// Little theme picture on a level card.
+fn draw_card_art(theme: Theme, x: f32, y: f32, w: f32, h: f32, u: f32, t: f32) {
+    match theme {
+        Theme::Meadow => {
+            gradient_rect(x, y, w, h, rgb(96, 170, 245), rgb(196, 232, 255));
+            cloud(x + w * 0.15, y + h * 0.3, 0.35 * u, WHITE);
+            draw_circle(x + w * 0.3, y + h * 1.25, h * 0.75, rgb(146, 206, 150));
+            draw_circle(x + w * 0.85, y + h * 1.3, h * 0.7, rgb(118, 202, 82));
+            draw_rectangle(x + w * 0.62, y + h * 0.48, 4.0 * u, 14.0 * u, rgb(150, 110, 80));
+            draw_circle(x + w * 0.62 + 2.0 * u, y + h * 0.45, 10.0 * u, rgb(110, 180, 100));
+            draw_circle(x + w * 0.62 - 2.0 * u, y + h * 0.42, 2.4 * u, ORANGE);
+            draw_circle(x + w * 0.62 + 6.0 * u, y + h * 0.47, 2.4 * u, ORANGE);
+        }
+        Theme::Factory => {
+            gradient_rect(x, y, w, h, rgb(255, 226, 194), rgb(236, 176, 132));
+            draw_gear(x + w * 0.25, y + h * 0.55, h * 0.28, t * 0.6, rgb(220, 150, 108), rgb(245, 200, 160));
+            draw_rectangle(x, y + h * 0.78, w, h * 0.22, rgb(206, 148, 90));
+            draw_rectangle(x, y + h * 0.74, w, h * 0.07, rgb(255, 172, 204));
+            draw_circle(x + w * 0.7, y + h * 0.48, h * 0.2, COOKIE);
+            for (ox, oy) in [(-0.05, -0.05), (0.04, 0.04), (0.06, -0.08)] {
+                draw_circle(x + w * (0.7 + ox), y + h * (0.48 + oy), 2.2 * u, CHOC);
+            }
+        }
+        Theme::Sky => {
+            gradient_rect(x, y, w, h, rgb(110, 172, 252), rgb(255, 222, 238));
+            draw_circle(x + w * 0.8, y + h * 0.25, h * 0.14, rgb(255, 246, 200));
+            cloud(x + w * 0.05, y + h * 0.7, 0.5 * u, WHITE);
+            cloud(x + w * 0.55, y + h * 0.82, 0.6 * u, WHITE);
+            cloud(x + w * 0.35, y + h * 0.35, 0.3 * u, rgba(255, 255, 255, 200));
+        }
+    }
+}
+
+/// Level select: one card per level, locked until the previous one is cleared.
+pub fn draw_level_select(names: &[(String, Theme)], progress: &Progress, sel: usize, t: f32) {
+    set_default_camera();
+    let u = ui_scale();
+    let sw = screen_width();
+    text_outline_center("CHOOSE A LEVEL", sw / 2.0, 58.0 * u, 34.0 * u, rgb(255, 246, 220), rgb(214, 104, 20));
+    let n = names.len() as f32;
+    let (cw, ch, gap) = (150.0 * u, 190.0 * u, 18.0 * u);
+    let x0 = sw / 2.0 - (n * cw + (n - 1.0) * gap) / 2.0;
+    for (i, (name, theme)) in names.iter().enumerate() {
+        let unlocked = progress.unlocked(i);
+        let save = &progress.levels[i];
+        let chosen = i == sel;
+        let lift = if chosen { 6.0 * u + (t * 4.0).sin() * 2.0 * u } else { 0.0 };
+        let x = x0 + i as f32 * (cw + gap);
+        let y = 90.0 * u - lift;
+        if chosen {
+            rounded_rect(x - 4.0 * u, y - 4.0 * u, cw + 8.0 * u, ch + 8.0 * u, 12.0 * u, rgb(255, 196, 60));
+        }
+        rounded_rect(x + 3.0 * u, y + 5.0 * u, cw, ch, 10.0 * u, rgba(0, 0, 0, 60));
+        rounded_rect(x, y, cw, ch, 10.0 * u, rgb(255, 250, 238));
+        let (ax, ay, aw, ah) = (x + 8.0 * u, y + 8.0 * u, cw - 16.0 * u, 92.0 * u);
+        clip(Some((ax, ay, aw, ah)));
+        draw_card_art(*theme, ax, ay, aw, ah, u, t);
+        clip(None);
+        text_center(&format!("{}", i + 1), x + cw / 2.0, ay + ah + 26.0 * u, 26.0 * u, ORANGE_DARK);
+        text_center(&name.to_uppercase(), x + cw / 2.0, ay + ah + 46.0 * u, 13.0 * u, INK);
+        if unlocked {
+            golden_slots(vec2(x + cw / 2.0 - 18.0 * u, ay + ah + 62.0 * u), 6.0 * u, 18.0 * u, |k| save.goldens & (1 << k) != 0);
+            let best = save.best_time.map(|b| format!("BEST {}", fmt_time(b))).unwrap_or_else(|| "NEW!".into());
+            text_center(&best, x + cw / 2.0, ay + ah + 84.0 * u, 12.0 * u, rgb(120, 90, 70));
+        } else {
+            rounded_rect(x, y, cw, ch, 10.0 * u, rgba(40, 30, 50, 150));
+            // padlock
+            let c = vec2(x + cw / 2.0, y + 66.0 * u);
+            draw_circle_lines(c.x, c.y - 10.0 * u, 10.0 * u, 4.0 * u, rgb(230, 230, 240));
+            rounded_rect(c.x - 15.0 * u, c.y - 6.0 * u, 30.0 * u, 24.0 * u, 4.0 * u, rgb(255, 214, 90));
+            draw_circle(c.x, c.y + 4.0 * u, 3.5 * u, rgb(150, 100, 40));
+            text_center("clear the last level", x + cw / 2.0, ay + ah + 84.0 * u, 11.0 * u, rgb(240, 236, 250));
+        }
+    }
+    if ((t * 2.0) as i32) % 2 == 0 {
+        text_center("LEFT / RIGHT choose      ENTER play      ESC back", sw / 2.0, 318.0 * u, 14.0 * u, WHITE);
     }
 }
 
@@ -762,10 +1407,19 @@ pub fn draw_pause() {
     let u = ui_scale();
     let cx = screen_width() / 2.0;
     text_outline_center("PAUSED", cx, 150.0 * u, 48.0 * u, WHITE, rgb(60, 110, 200));
-    text_center("ESC resume      R retry      Q title", cx, 200.0 * u, 15.0 * u, WHITE);
+    text_center("ESC resume      R retry      Q level select", cx, 200.0 * u, 15.0 * u, WHITE);
 }
 
-pub fn draw_clear(g: &Game) {
+pub fn rank(g: &Game) -> &'static str {
+    match g.deaths {
+        0 if g.goldens >= 3 => "S",
+        0 | 1 => "A",
+        2..=4 => "B",
+        _ => "C",
+    }
+}
+
+pub fn draw_clear(g: &Game, new_best: bool, has_next: bool) {
     let k = ((g.clear_t - 1.0) / 0.5).clamp(0.0, 1.0);
     if k <= 0.0 {
         return;
@@ -774,24 +1428,23 @@ pub fn draw_clear(g: &Game) {
     let u = ui_scale();
     let cx = screen_width() / 2.0;
     let a = k;
-    text_outline_center("COURSE CLEAR!", cx, 92.0 * u, 46.0 * u, Color::new(1.0, 0.85, 0.3, a), Color::new(0.6, 0.25, 0.05, a));
-    let rank = match g.deaths {
-        0 => "S",
-        1..=5 => "A",
-        6..=15 => "B",
-        _ => "C",
-    };
+    text_outline_center("COURSE CLEAR!", cx, 84.0 * u, 46.0 * u, Color::new(1.0, 0.85, 0.3, a), Color::new(0.6, 0.25, 0.05, a));
     let rows = [
         format!("TIME          {}", fmt_time(g.time)),
-        format!("DEATHS        {}", g.deaths),
-        format!("ORANGES       {}/{}", g.oranges, g.orange_total),
+        format!("ORANGES       {}/{}", g.collected, g.orange_total),
         format!("GOLDEN        {}/3", g.goldens),
+        format!("LIVES LOST    {}", g.deaths),
     ];
     for (i, r) in rows.iter().enumerate() {
-        text(r, cx - 110.0 * u, (140.0 + i as f32 * 22.0) * u, 17.0 * u, Color::new(1.0, 1.0, 1.0, a));
+        text(r, cx - 110.0 * u, (130.0 + i as f32 * 22.0) * u, 17.0 * u, Color::new(1.0, 1.0, 1.0, a));
     }
-    text_outline_center(&format!("RANK {rank}"), cx, 252.0 * u, 34.0 * u, Color::new(1.0, 0.95, 0.7, a), Color::new(0.75, 0.35, 0.05, a));
+    if new_best {
+        let wob = (g.t * 6.0).sin() * 2.0 * u;
+        text_outline_center("NEW BEST!", cx + 150.0 * u, 130.0 * u + wob, 16.0 * u, Color::new(1.0, 0.95, 0.6, a), Color::new(0.85, 0.2, 0.3, a));
+    }
+    text_outline_center(&format!("RANK {}", rank(g)), cx, 242.0 * u, 34.0 * u, Color::new(1.0, 0.95, 0.7, a), Color::new(0.75, 0.35, 0.05, a));
     if g.clear_t > 2.0 && ((g.clear_t * 2.0) as i32) % 2 == 0 {
-        text_center("ENTER play again      ESC title", cx, 300.0 * u, 15.0 * u, WHITE);
+        let msg = if has_next { "ENTER next level      ESC level select" } else { "ENTER level select      R play again" };
+        text_center(msg, cx, 296.0 * u, 15.0 * u, WHITE);
     }
 }

@@ -1,19 +1,27 @@
 //! Game state and fixed-timestep simulation.
 
-use macroquad::math::{vec2, Rect, Vec2};
 use macroquad::color::Color;
+use macroquad::math::{vec2, Rect, Vec2};
 
 use crate::level::{Level, SpawnKind, Tile};
 use crate::physics::*;
 
 pub const VIEW_H: f32 = 360.0;
-pub const CRUMBLE_DELAY: f32 = 0.45;
+pub const CRUMBLE_DELAY: f32 = 0.8;
 pub const CRUMBLE_RESPAWN: f32 = 3.0;
+pub const MAX_HEARTS: i32 = 3;
 const PLAT_H_SPEED: f32 = 60.0;
 const PLAT_V_SPEED: f32 = 50.0;
 const PLAT_THICK: f32 = 16.0;
-const TURRET_INTERVAL: f32 = 2.2;
-const SEED_SPEED: f32 = 150.0;
+const TURRET_INTERVAL: f32 = 3.0;
+const SEED_SPEED: f32 = 110.0;
+/// Blinking safe time after taking damage.
+const INVULN: f32 = 1.6;
+const THROW_SPEED: f32 = 340.0;
+const THROW_COOLDOWN: f32 = 0.22;
+const MAX_THROWN: usize = 3;
+pub const THROWN_SIZE: f32 = 12.0;
+const BOX_ORANGES: u32 = 3;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Sfx {
@@ -29,6 +37,16 @@ pub enum Sfx {
     Crumble,
     Shoot,
     Win,
+    Hurt,
+    Heart,
+    Spring,
+    Glide,
+    Throw,
+    NoAmmo,
+    Pop,
+    BoxHit,
+    BoxEmpty,
+    Secret,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -89,6 +107,9 @@ impl Enemy {
     pub fn rect(&self) -> Rect {
         Rect::new(self.pos.x, self.pos.y, self.size.x, self.size.y)
     }
+    fn hittable(&self) -> bool {
+        self.alive && self.dying <= 0.0 && self.active
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -105,23 +126,47 @@ pub enum ItemKind {
     Orange,
     Golden,
     Shield,
+    Heart,
 }
 
 #[derive(Clone, Debug)]
 pub struct Item {
     pub kind: ItemKind,
+    /// Centre.
     pub pos: Vec2,
+    pub vel: Vec2,
+    /// Popped out of a box and still bouncing around.
+    pub falling: bool,
     pub taken: bool,
+    /// Index among the level's golden oranges (for the save file).
+    pub id: u8,
 }
 
 impl Item {
-    fn rect(&self) -> Rect {
-        let r = match self.kind {
+    fn new(kind: ItemKind, pos: Vec2) -> Item {
+        Item { kind, pos, vel: Vec2::ZERO, falling: false, taken: false, id: 0 }
+    }
+    fn radius(&self) -> f32 {
+        match self.kind {
             ItemKind::Orange => 9.0,
             _ => 12.0,
-        };
+        }
+    }
+    fn rect(&self) -> Rect {
+        let r = self.radius();
         Rect::new(self.pos.x - r, self.pos.y - r, r * 2.0, r * 2.0)
     }
+}
+
+/// An orange flying through the air after being thrown.
+#[derive(Clone, Debug)]
+pub struct Thrown {
+    /// Top-left of a THROWN_SIZE square.
+    pub pos: Vec2,
+    pub vel: Vec2,
+    pub life: f32,
+    pub bounces: u32,
+    pub spin: f32,
 }
 
 #[derive(Clone, Debug)]
@@ -148,6 +193,10 @@ pub struct Anim {
     pub tilt: f32,
     pub run_phase: f32,
     pub bob: f32,
+    /// Orange propeller angle and spin speed.
+    pub prop: f32,
+    pub prop_speed: f32,
+    pub throw_t: f32,
 }
 
 /// Read-only view of the world used for collision during a step.
@@ -171,6 +220,12 @@ impl Collider for WorldView<'_> {
     fn plats(&self) -> &[Rect] {
         self.plats
     }
+    fn fx(&self, tx: i32, ty: i32) -> Fx {
+        self.lv.tile(tx, ty).fx()
+    }
+    fn wind(&self, tx: i32, ty: i32) -> bool {
+        self.lv.wind_at(tx, ty)
+    }
 }
 
 pub fn spike_rect(t: Tile, tx: i32, ty: i32) -> Option<Rect> {
@@ -182,9 +237,17 @@ pub fn spike_rect(t: Tile, tx: i32, ty: i32) -> Option<Rect> {
     }
 }
 
-/// Smaller-than-hitbox rectangle used for damage, so grazes don't kill.
+/// Smaller-than-hitbox rectangle used for damage, so grazes don't count.
 pub fn hurt_rect(b: &Body) -> Rect {
     Rect::new(b.pos.x + 3.0, b.pos.y + 4.0, PW - 6.0, PH - 4.0)
+}
+
+pub fn goal_rect(tx: i32, ty: i32) -> Rect {
+    Rect::new(tx as f32 * TILE + 30.0, (ty - 3) as f32 * TILE, 36.0, 4.0 * TILE)
+}
+
+pub fn checkpoint_rect(pos: Vec2) -> Rect {
+    Rect::new(pos.x - 14.0, pos.y - 2.0 * TILE, 28.0, 2.0 * TILE)
 }
 
 pub struct Game {
@@ -197,20 +260,39 @@ pub struct Game {
     pub death_t: f32,
     pub death_pos: Vec2,
     death_vel: Vec2,
+    pub hearts: i32,
     pub shield: bool,
     pub invuln: f32,
+    /// Last spot of solid ground; a fall into a pit brings you back here.
+    safe_pos: Vec2,
     pub enemies: Vec<Enemy>,
     pub turrets: Vec<Turret>,
     pub items: Vec<Item>,
+    pub thrown: Vec<Thrown>,
+    throw_cd: f32,
     pub checkpoints: Vec<Checkpoint>,
     pub goal: Rect,
     pub goal_tile: (i32, i32),
     respawn: Vec2,
+    pub box_used: Vec<bool>,
+    /// (tile index, time since bumped)
+    pub box_bumps: Vec<(usize, f32)>,
+    /// (tile, time since launched)
+    pub spring_anims: Vec<((i32, i32), f32)>,
+    /// Per hidden room: 0 = hidden .. 1 = fully revealed.
+    pub reveal: Vec<f32>,
+    revealed: Vec<bool>,
+    /// Sign the player is standing at: (number, top-centre of the sign in world space).
+    pub sign: Option<(u8, Vec2)>,
     pub deaths: u32,
     pub time: f32,
+    /// Oranges in the pocket (thrown ones are spent).
     pub oranges: u32,
+    /// Oranges picked up in total.
+    pub collected: u32,
     pub orange_total: u32,
     pub goldens: u32,
+    pub golden_mask: u8,
     pub cleared: bool,
     pub clear_t: f32,
     pub particles: Vec<Particle>,
@@ -236,46 +318,69 @@ impl Game {
         let mut checkpoints = vec![];
         let mut goal = Rect::new(-1000.0, 0.0, 0.0, 0.0);
         let mut goal_tile = (0, 0);
+        let mut golden_id = 0;
         for s in &lv.spawns {
+            let at = tile_center(s.tx, s.ty);
             match s.kind {
-                SpawnKind::Orange => items.push(Item { kind: ItemKind::Orange, pos: tile_center(s.tx, s.ty), taken: false }),
-                SpawnKind::Golden => items.push(Item { kind: ItemKind::Golden, pos: tile_center(s.tx, s.ty), taken: false }),
-                SpawnKind::Shield => items.push(Item { kind: ItemKind::Shield, pos: tile_center(s.tx, s.ty), taken: false }),
+                SpawnKind::Orange => items.push(Item::new(ItemKind::Orange, at)),
+                SpawnKind::Golden => {
+                    let mut it = Item::new(ItemKind::Golden, at);
+                    it.id = golden_id;
+                    golden_id += 1;
+                    items.push(it);
+                }
+                SpawnKind::Shield => items.push(Item::new(ItemKind::Shield, at)),
+                SpawnKind::Heart => items.push(Item::new(ItemKind::Heart, at)),
                 SpawnKind::Checkpoint => {
                     checkpoints.push(Checkpoint { pos: vec2((s.tx as f32 + 0.5) * TILE, (s.ty + 1) as f32 * TILE), active: false })
                 }
                 SpawnKind::Goal => {
                     goal_tile = (s.tx, s.ty);
-                    goal = Rect::new(s.tx as f32 * TILE + 30.0, (s.ty - 3) as f32 * TILE, 36.0, 4.0 * TILE);
+                    goal = goal_rect(s.tx, s.ty);
                 }
                 _ => {}
             }
         }
-        let orange_total = items.iter().filter(|i| i.kind == ItemKind::Orange).count() as u32;
+        let boxes = lv.tiles.iter().filter(|t| **t == Tile::BoxOrange).count() as u32;
+        let orange_total = items.iter().filter(|i| i.kind == ItemKind::Orange).count() as u32 + boxes * BOX_ORANGES;
         let n = lv.tiles.len();
+        let groups = lv.fake_groups;
+        let body = Body::new(start - vec2(PW / 2.0, PH));
         let mut g = Game {
             crumbles: vec![Crumble::Solid; n],
             plats: vec![],
             plat_rects: vec![],
-            body: Body::new(start - vec2(PW / 2.0, PH)),
+            safe_pos: body.pos,
+            body,
             alive: true,
             death_t: 0.0,
             death_pos: Vec2::ZERO,
             death_vel: Vec2::ZERO,
+            hearts: MAX_HEARTS,
             shield: false,
             invuln: 0.0,
             enemies: vec![],
             turrets: vec![],
             items,
+            thrown: vec![],
+            throw_cd: 0.0,
             checkpoints,
             goal,
             goal_tile,
             respawn: start,
+            box_used: vec![false; n],
+            box_bumps: vec![],
+            spring_anims: vec![],
+            reveal: vec![0.0; groups],
+            revealed: vec![false; groups],
+            sign: None,
             deaths: 0,
             time: 0.0,
             oranges: 0,
+            collected: 0,
             orange_total,
             goldens: 0,
+            golden_mask: 0,
             cleared: false,
             clear_t: 0.0,
             particles: vec![],
@@ -302,11 +407,12 @@ impl Game {
         (self.rng % 10_000) as f32 / 10_000.0
     }
 
-    /// Reset everything that comes back when you die (enemies, platforms, crumbling blocks, shields).
+    /// Reset everything that comes back when you lose a life (enemies, platforms, crumbling blocks, shields, hearts).
     fn reset_world(&mut self) {
         self.enemies.clear();
         self.plats.clear();
         self.turrets.clear();
+        self.thrown.clear();
         for c in self.crumbles.iter_mut() {
             *c = Crumble::Solid;
         }
@@ -338,7 +444,7 @@ impl Game {
             }
         }
         for it in self.items.iter_mut() {
-            if it.kind == ItemKind::Shield {
+            if matches!(it.kind, ItemKind::Shield | ItemKind::Heart) && !it.falling {
                 it.taken = false;
             }
         }
@@ -348,7 +454,9 @@ impl Game {
     fn respawn_player(&mut self) {
         self.reset_world();
         self.body = Body::new(self.respawn - vec2(PW / 2.0, PH));
+        self.safe_pos = self.body.pos;
         self.alive = true;
+        self.hearts = MAX_HEARTS;
         self.shield = false;
         self.invuln = 0.0;
         self.anim = Anim { scale: vec2(1.3, 0.7), ..Default::default() };
@@ -357,7 +465,7 @@ impl Game {
         self.puff(self.body.center(), 10, Color::new(1.0, 1.0, 1.0, 0.9));
     }
 
-    /// R key: give up and go back to the last checkpoint (counts as a death).
+    /// R key: give up and go back to the last checkpoint (counts as a lost life).
     pub fn retry(&mut self) {
         if self.alive && !self.cleared {
             self.deaths += 1;
@@ -370,6 +478,7 @@ impl Game {
             return;
         }
         self.alive = false;
+        self.hearts = 0;
         self.death_t = 0.0;
         self.deaths += 1;
         self.shield = false;
@@ -380,21 +489,40 @@ impl Game {
         self.sfx.push(Sfx::Die);
     }
 
-    fn hurt(&mut self) {
-        if self.invuln > 0.0 || !self.alive {
+    /// Take a hit from something at `from` (used for the knock-back direction).
+    fn hurt(&mut self, from: Vec2) {
+        if self.invuln > 0.0 || !self.alive || self.cleared {
             return;
         }
+        let c = self.body.center();
         if self.shield {
             self.shield = false;
-            self.invuln = 1.5;
+            self.invuln = 1.2;
             self.body.vel.y = self.body.vel.y.min(-260.0);
             self.body.jumping = false;
             self.sfx.push(Sfx::ShieldPop);
-            let c = self.body.center();
             self.puff(c, 16, Color::new(0.6, 0.85, 1.0, 0.9));
-        } else {
-            self.die();
+            return;
         }
+        self.hearts -= 1;
+        if self.hearts <= 0 {
+            self.die();
+            return;
+        }
+        self.invuln = INVULN;
+        let dir = if (c.x - from.x).abs() > 2.0 { (c.x - from.x).signum() } else { -self.body.facing };
+        let b = &mut self.body;
+        b.vel = vec2(dir * 170.0, -330.0);
+        b.jumping = false;
+        b.boost = false;
+        b.gliding = false;
+        b.glide_armed = false;
+        b.on_ground = false;
+        b.plat = None;
+        self.shake = 0.15;
+        self.anim.scale = vec2(1.25, 0.75);
+        self.sfx.push(Sfx::Hurt);
+        self.puff(c, 8, Color::new(1.0, 0.5, 0.55, 0.9));
     }
 
     pub fn puff(&mut self, at: Vec2, n: usize, color: Color) {
@@ -417,6 +545,15 @@ impl Game {
         }
     }
 
+    fn confetti(&mut self, at: Vec2, n: usize) {
+        let cols = [Color::new(1.0, 0.6, 0.15, 1.0), Color::new(1.0, 0.85, 0.2, 1.0), Color::new(0.5, 0.85, 1.0, 1.0), Color::new(1.0, 0.5, 0.7, 1.0)];
+        for _ in 0..n {
+            let col = cols[(self.rand() * 3.99) as usize];
+            let vel = vec2((self.rand() - 0.5) * 220.0, -120.0 - self.rand() * 200.0);
+            self.particles.push(Particle { pos: at, vel, life: 1.2, max: 1.2, size: 3.0, color: col, grav: 300.0 });
+        }
+    }
+
     pub fn update(&mut self, inp: &Input, dt: f32) {
         self.t += dt;
         self.shake = (self.shake - dt).max(0.0);
@@ -427,6 +564,19 @@ impl Game {
             }
         }
         self.update_particles(dt);
+        for b in self.box_bumps.iter_mut() {
+            b.1 += dt;
+        }
+        self.box_bumps.retain(|b| b.1 < 0.25);
+        for s in self.spring_anims.iter_mut() {
+            s.1 += dt;
+        }
+        self.spring_anims.retain(|s| s.1 < 0.5);
+        for (r, on) in self.reveal.iter_mut().zip(&self.revealed) {
+            if *on {
+                *r = (*r + dt * 2.5).min(1.0);
+            }
+        }
 
         if self.cleared {
             self.clear_t += dt;
@@ -436,12 +586,8 @@ impl Game {
             let wv = WorldView { lv: &self.lv, crumbles: &self.crumbles, plats: &self.plat_rects };
             step_player(&mut self.body, &empty, dt, &wv);
             if self.clear_t < 2.5 && (self.t * 10.0) as i32 % 2 == 0 {
-                let x = self.goal.x + self.rand() * self.goal.w;
-                let y = self.goal.y + self.rand() * 40.0;
-                let col = [Color::new(1.0, 0.6, 0.15, 1.0), Color::new(1.0, 0.85, 0.2, 1.0), Color::new(0.5, 0.85, 1.0, 1.0), Color::new(1.0, 0.5, 0.7, 1.0)]
-                    [(self.rand() * 3.99) as usize];
-                let vel = vec2((self.rand() - 0.5) * 160.0, -120.0 - self.rand() * 160.0);
-                self.particles.push(Particle { pos: vec2(x, y), vel, life: 1.4, max: 1.4, size: 3.0, color: col, grav: 260.0 });
+                let at = vec2(self.goal.x + self.rand() * self.goal.w, self.goal.y + self.rand() * 40.0);
+                self.confetti(at, 1);
             }
             self.update_anim(dt);
             return;
@@ -459,6 +605,7 @@ impl Game {
 
         self.time += dt;
         self.invuln = (self.invuln - dt).max(0.0);
+        self.throw_cd = (self.throw_cd - dt).max(0.0);
 
         self.update_plats(dt);
 
@@ -493,20 +640,143 @@ impl Game {
             self.sfx.push(Sfx::Land);
             self.dust(feet, 6);
         }
-        if self.body.on_ground && self.body.vel.x.abs() > RUN_MAX * 0.8 && self.rand() < 0.12 {
+        if let Some(tile) = ev.sprung {
+            self.sfx.push(Sfx::Spring);
+            self.anim.scale = vec2(0.7, 1.3);
+            self.spring_anims.push((tile, 0.0));
+            self.dust(feet, 6);
+        }
+        if ev.glide_start {
+            self.sfx.push(Sfx::Glide);
+        }
+        if let Some((tx, ty)) = ev.bump_tile {
+            self.hit_box(tx, ty);
+        }
+        let fast = self.body.vel.x.abs() > RUN_MAX * 0.8 || self.body.slope != 0;
+        if self.body.on_ground && fast && self.rand() < 0.15 {
             self.dust(feet, 1);
         }
 
+        self.track_safe_ground();
+        if inp.throw_pressed {
+            self.throw();
+        }
         self.update_crumbles(dt);
         self.update_enemies(dt);
         self.update_turrets(dt);
+        self.update_thrown(dt);
+        self.update_items(dt);
         self.interact(prev_bottom, inp.jump_held);
+        self.update_secrets();
 
         if self.body.pos.y > self.lv.h as f32 * TILE + 40.0 {
-            self.die();
+            self.fell_in_pit();
         }
         self.update_camera(dt, false);
         self.update_anim(dt);
+    }
+
+    /// Remember the last place where the player stood on firm ground (not next to spikes).
+    fn track_safe_ground(&mut self) {
+        let b = &self.body;
+        if !b.on_ground || b.plat.is_some() || b.slope != 0 {
+            return;
+        }
+        let row = ((b.pos.y + PH + 0.5) / TILE).floor() as i32;
+        let l = (b.pos.x / TILE).floor() as i32;
+        let r = ((b.pos.x + PW - 0.01) / TILE).floor() as i32;
+        let firm = |t: Tile| {
+            matches!(t, Tile::Ground | Tile::Stone | Tile::OneWay | Tile::TurretL | Tile::TurretR | Tile::Fan | Tile::BoxOrange | Tile::BoxHeart)
+        };
+        if !firm(self.lv.tile(l, row)) || !firm(self.lv.tile(r, row)) {
+            return;
+        }
+        for tx in l - 1..=r + 1 {
+            for ty in row - 2..=row - 1 {
+                if matches!(self.lv.tile(tx, ty), Tile::SpikeUp | Tile::SpikeDown) {
+                    return;
+                }
+            }
+        }
+        self.safe_pos = b.pos;
+    }
+
+    /// Falling into a pit costs a heart and puts you back on the last safe ground.
+    fn fell_in_pit(&mut self) {
+        if self.hearts <= 1 {
+            self.die();
+            return;
+        }
+        self.hearts -= 1;
+        let facing = self.body.facing;
+        self.body = Body::new(self.safe_pos);
+        self.body.facing = facing;
+        self.invuln = INVULN;
+        self.shield = false;
+        self.anim.scale = vec2(1.3, 0.7);
+        self.sfx.push(Sfx::Hurt);
+        let c = self.body.center();
+        self.puff(c, 12, Color::new(1.0, 1.0, 1.0, 0.9));
+    }
+
+    fn throw(&mut self) {
+        if self.throw_cd > 0.0 {
+            return;
+        }
+        if self.oranges == 0 {
+            self.sfx.push(Sfx::NoAmmo);
+            self.toast = Some(("NO ORANGES!", 0.9));
+            self.throw_cd = 0.4;
+            return;
+        }
+        if self.thrown.len() >= MAX_THROWN {
+            return;
+        }
+        self.oranges -= 1;
+        let f = self.body.facing;
+        let c = self.body.center();
+        let pos = vec2(c.x - THROWN_SIZE / 2.0 + f * 4.0, c.y - THROWN_SIZE / 2.0 - 6.0);
+        let vel = vec2(f * THROW_SPEED + self.body.vel.x * 0.35, -170.0);
+        self.thrown.push(Thrown { pos, vel, life: 1.8, bounces: 0, spin: 0.0 });
+        self.throw_cd = THROW_COOLDOWN;
+        self.anim.throw_t = 0.2;
+        self.anim.scale = vec2(1.12, 0.9);
+        self.sfx.push(Sfx::Throw);
+    }
+
+    /// A cookie box was hit (head bump or thrown orange).
+    fn hit_box(&mut self, tx: i32, ty: i32) {
+        let t = self.lv.tile(tx, ty);
+        if !t.is_box() {
+            return;
+        }
+        let i = self.lv.idx(tx, ty).unwrap();
+        self.box_bumps.retain(|b| b.0 != i);
+        self.box_bumps.push((i, 0.0));
+        if self.box_used[i] {
+            self.sfx.push(Sfx::BoxEmpty);
+            return;
+        }
+        self.box_used[i] = true;
+        self.sfx.push(Sfx::BoxHit);
+        let top = vec2((tx as f32 + 0.5) * TILE, ty as f32 * TILE - 13.0);
+        match t {
+            Tile::BoxOrange => {
+                for k in 0..BOX_ORANGES as i32 {
+                    let mut it = Item::new(ItemKind::Orange, top);
+                    it.vel = vec2((k - 1) as f32 * 55.0, if k == 1 { -380.0 } else { -320.0 });
+                    it.falling = true;
+                    self.items.push(it);
+                }
+            }
+            _ => {
+                let mut it = Item::new(ItemKind::Heart, top);
+                it.vel = vec2(0.0, -300.0);
+                it.falling = true;
+                self.items.push(it);
+            }
+        }
+        self.puff(top, 8, Color::new(1.0, 0.85, 0.55, 1.0));
     }
 
     fn update_plats(&mut self, dt: f32) {
@@ -615,10 +885,10 @@ impl Game {
                 }
                 match e.kind {
                     EKind::Jelly | EKind::Hedgehog => {
-                        let speed = if e.kind == EKind::Jelly { 42.0 } else { 62.0 };
+                        let speed = if e.kind == EKind::Jelly { 40.0 } else { 55.0 };
                         e.vel.x = e.dir * speed;
                         e.vel.y = (e.vel.y + G_FALL * dt).min(MAX_FALL);
-                        if sweep_x(&mut e.pos, e.size, e.vel.x * dt, &wv, true) {
+                        if sweep_x(&mut e.pos, e.size, e.vel.x * dt, &wv, true).is_some() {
                             e.dir = -e.dir;
                         }
                         let hit = sweep_y(&mut e.pos, e.size, e.vel.y * dt, &wv, false, false);
@@ -642,14 +912,14 @@ impl Game {
                             if dx.abs() > 4.0 {
                                 e.dir = dx.signum();
                             }
-                            if e.timer > 1.25 && dx.abs() < 8.0 * TILE {
-                                e.vel.y = -470.0;
-                                e.vel.x = e.dir * 95.0;
+                            if e.timer > 1.5 && dx.abs() < 8.0 * TILE {
+                                e.vel.y = -450.0;
+                                e.vel.x = e.dir * 85.0;
                                 e.timer = 0.0;
                                 e.on_ground = false;
                             }
                         }
-                        if sweep_x(&mut e.pos, e.size, e.vel.x * dt, &wv, true) {
+                        if sweep_x(&mut e.pos, e.size, e.vel.x * dt, &wv, true).is_some() {
                             e.vel.x = 0.0;
                         }
                         let hit = sweep_y(&mut e.pos, e.size, e.vel.y * dt, &wv, false, false);
@@ -711,13 +981,115 @@ impl Game {
         }
     }
 
+    /// Knock out an enemy with a thrown orange (works on every kind, even hedgehogs).
+    fn pop_enemy(&mut self, i: usize) {
+        let e = &mut self.enemies[i];
+        e.alive = false;
+        let c = e.pos + e.size / 2.0;
+        self.sfx.push(Sfx::Pop);
+        self.puff(c, 10, Color::new(1.0, 1.0, 1.0, 0.95));
+        self.puff(c, 6, Color::new(1.0, 0.8, 0.3, 1.0));
+    }
+
+    fn update_thrown(&mut self, dt: f32) {
+        let mut list = std::mem::take(&mut self.thrown);
+        let size = vec2(THROWN_SIZE, THROWN_SIZE);
+        let bottom = self.lv.h as f32 * TILE + 40.0;
+        let mut boxes = vec![];
+        let mut splats = vec![];
+        let mut pops = vec![];
+        for p in list.iter_mut() {
+            p.life -= dt;
+            p.vel.y = (p.vel.y + 1100.0 * dt).min(600.0);
+            p.spin += p.vel.x.signum() * 14.0 * dt;
+            let wv = WorldView { lv: &self.lv, crumbles: &self.crumbles, plats: &self.plat_rects };
+            if let Some(t) = sweep_x(&mut p.pos, size, p.vel.x * dt, &wv, false) {
+                boxes.push(t);
+                p.life = 0.0;
+            }
+            let hit = sweep_y(&mut p.pos, size, p.vel.y * dt, &wv, true, false);
+            if hit.landed {
+                p.bounces += 1;
+                p.vel.y = -260.0 * 0.75f32.powi(p.bounces as i32);
+                if p.bounces > 3 {
+                    p.life = 0.0;
+                }
+            }
+            if hit.bumped {
+                if let Some(t) = hit.tile {
+                    boxes.push(t);
+                }
+                p.life = 0.0;
+            }
+            let r = Rect::new(p.pos.x, p.pos.y, THROWN_SIZE, THROWN_SIZE);
+            if p.life > 0.0 {
+                if let Some(i) = self.enemies.iter().position(|e| e.hittable() && e.rect().overlaps(&r)) {
+                    pops.push(i);
+                    p.life = 0.0;
+                }
+            }
+            if p.life <= 0.0 && p.pos.y < bottom {
+                splats.push(p.pos + size / 2.0);
+            }
+            if p.pos.y > bottom {
+                p.life = 0.0;
+            }
+        }
+        list.retain(|p| p.life > 0.0);
+        self.thrown = list;
+        pops.sort_unstable();
+        pops.dedup();
+        for i in pops.into_iter().rev() {
+            self.pop_enemy(i);
+        }
+        self.enemies.retain(|e| e.alive);
+        for at in splats {
+            self.puff(at, 6, Color::new(1.0, 0.65, 0.2, 1.0));
+        }
+        for (tx, ty) in boxes {
+            self.hit_box(tx, ty);
+        }
+    }
+
+    /// Items popped out of boxes bounce and settle.
+    fn update_items(&mut self, dt: f32) {
+        let bottom = self.lv.h as f32 * TILE + 40.0;
+        let wv = WorldView { lv: &self.lv, crumbles: &self.crumbles, plats: &self.plat_rects };
+        for it in self.items.iter_mut().filter(|i| i.falling && !i.taken) {
+            let r = it.radius();
+            let size = vec2(r * 2.0, r * 2.0);
+            let mut p = it.pos - vec2(r, r);
+            it.vel.y = (it.vel.y + 1200.0 * dt).min(500.0);
+            if sweep_x(&mut p, size, it.vel.x * dt, &wv, false).is_some() {
+                it.vel.x = -it.vel.x * 0.5;
+            }
+            let hit = sweep_y(&mut p, size, it.vel.y * dt, &wv, true, false);
+            if hit.landed {
+                it.vel.x *= 0.5;
+                if it.vel.y > 160.0 {
+                    it.vel.y = -it.vel.y * 0.35;
+                } else {
+                    it.vel = Vec2::ZERO;
+                    it.falling = false;
+                }
+            }
+            if hit.bumped {
+                it.vel.y = 0.0;
+            }
+            it.pos = p + vec2(r, r);
+            if it.pos.y > bottom {
+                it.taken = true;
+            }
+        }
+    }
+
     fn interact(&mut self, prev_bottom: f32, jump_held: bool) {
         // enemies
         let pr = self.body.rect();
         let mut stomped = None;
-        let mut hurt = false;
+        let mut hurt_by = None;
         for (i, e) in self.enemies.iter().enumerate() {
-            if !e.alive || e.dying > 0.0 || !e.active {
+            if !e.hittable() {
                 continue;
             }
             let er = e.rect();
@@ -731,7 +1103,7 @@ impl Game {
             } else {
                 let hr = hurt_rect(&self.body);
                 if hr.overlaps(&Rect::new(er.x + 2.0, er.y + 2.0, er.w - 4.0, er.h - 2.0)) {
-                    hurt = true;
+                    hurt_by = Some(e.pos + e.size / 2.0);
                 }
             }
         }
@@ -749,23 +1121,26 @@ impl Game {
             self.body.on_ground = false;
             self.sfx.push(Sfx::Stomp);
             self.puff(c, 8, Color::new(1.0, 1.0, 1.0, 0.9));
-        } else if hurt {
-            self.hurt();
+        } else if let Some(from) = hurt_by {
+            self.hurt(from);
         }
 
         // spikes
         let hr = hurt_rect(&self.body);
         let (c0, c1) = ((hr.x / TILE).floor() as i32, ((hr.x + hr.w) / TILE).floor() as i32);
         let (r0, r1) = ((hr.y / TILE).floor() as i32, ((hr.y + hr.h) / TILE).floor() as i32);
-        'spikes: for ty in r0..=r1 {
+        let mut spiked = None;
+        for ty in r0..=r1 {
             for tx in c0..=c1 {
                 if let Some(sr) = spike_rect(self.lv.tile(tx, ty), tx, ty) {
                     if sr.overlaps(&hr) {
-                        self.hurt();
-                        break 'spikes;
+                        spiked = Some(vec2(sr.x + sr.w / 2.0, sr.y + sr.h));
                     }
                 }
             }
+        }
+        if let Some(from) = spiked {
+            self.hurt(from);
         }
 
         // items
@@ -773,20 +1148,25 @@ impl Game {
         let mut got = vec![];
         for (i, it) in self.items.iter_mut().enumerate() {
             if !it.taken && it.rect().overlaps(&pr) {
+                if it.kind == ItemKind::Heart && self.hearts >= MAX_HEARTS && !it.falling {
+                    continue; // leave hearts for later when you're at full health
+                }
                 it.taken = true;
                 got.push(i);
             }
         }
         for i in got {
-            let (kind, pos) = (self.items[i].kind, self.items[i].pos);
+            let (kind, pos, id) = (self.items[i].kind, self.items[i].pos, self.items[i].id);
             match kind {
                 ItemKind::Orange => {
                     self.oranges += 1;
+                    self.collected += 1;
                     self.sfx.push(Sfx::Coin);
                     self.puff(pos, 5, Color::new(1.0, 0.75, 0.3, 1.0));
                 }
                 ItemKind::Golden => {
                     self.goldens += 1;
+                    self.golden_mask |= 1 << id;
                     self.sfx.push(Sfx::Golden);
                     self.toast = Some(("GOLDEN ORANGE!", 1.6));
                     self.puff(pos, 18, Color::new(1.0, 0.9, 0.3, 1.0));
@@ -796,16 +1176,21 @@ impl Game {
                     self.sfx.push(Sfx::Shield);
                     self.puff(pos, 10, Color::new(0.6, 0.85, 1.0, 1.0));
                 }
+                ItemKind::Heart => {
+                    self.hearts = (self.hearts + 1).min(MAX_HEARTS);
+                    self.sfx.push(Sfx::Heart);
+                    self.puff(pos, 10, Color::new(1.0, 0.45, 0.55, 1.0));
+                }
             }
         }
 
-        // checkpoints
+        // checkpoints (they also heal you)
         for i in 0..self.checkpoints.len() {
             let cp = &self.checkpoints[i];
-            let r = Rect::new(cp.pos.x - 14.0, cp.pos.y - 2.0 * TILE, 28.0, 2.0 * TILE);
-            if !cp.active && r.overlaps(&pr) {
+            if !cp.active && checkpoint_rect(cp.pos).overlaps(&pr) {
                 self.checkpoints[i].active = true;
                 self.respawn = self.checkpoints[i].pos;
+                self.hearts = MAX_HEARTS;
                 self.sfx.push(Sfx::Checkpoint);
                 self.toast = Some(("CHECKPOINT!", 1.6));
                 let p = self.checkpoints[i].pos - vec2(0.0, 50.0);
@@ -818,6 +1203,33 @@ impl Game {
             self.cleared = true;
             self.clear_t = 0.0;
             self.sfx.push(Sfx::Win);
+        }
+    }
+
+    /// Hidden rooms open up when you walk into them; signs show their text when you stand next to them.
+    fn update_secrets(&mut self) {
+        let pr = self.body.rect();
+        // rooms open when you step into them; signs are read from a few pixels further away
+        let col = |x: f32| (x / TILE).floor() as i32;
+        let (c0, c1) = (col(pr.x - 12.0), col(pr.x + pr.w + 12.0));
+        let (r0, r1) = ((pr.y / TILE).floor() as i32, ((pr.y + pr.h - 0.01) / TILE).floor() as i32);
+        self.sign = None;
+        for ty in r0..=r1 {
+            for tx in c0..=c1 {
+                let touching = tx >= col(pr.x - 2.0) && tx <= col(pr.x + pr.w + 2.0);
+                match self.lv.tile(tx, ty) {
+                    Tile::Fake if touching => {
+                        let g = self.lv.fake_group[self.lv.idx(tx, ty).unwrap()] as usize;
+                        if !self.revealed[g] {
+                            self.revealed[g] = true;
+                            self.sfx.push(Sfx::Secret);
+                            self.toast = Some(("SECRET ROOM!", 1.6));
+                        }
+                    }
+                    Tile::Sign(n) => self.sign = Some((n, vec2((tx as f32 + 0.5) * TILE, ty as f32 * TILE))),
+                    _ => {}
+                }
+            }
         }
     }
 
@@ -856,15 +1268,18 @@ impl Game {
         let a = &mut self.anim;
         let k = 1.0 - (-dt * 12.0).exp();
         a.scale += (Vec2::ONE - a.scale) * k;
+        a.throw_t = (a.throw_t - dt).max(0.0);
         let speed = b.vel.x.abs();
-        let moving = b.on_ground && speed > 10.0;
+        let moving = b.on_ground && speed > 10.0 && b.slope == 0;
         if moving {
             a.run_phase += speed * dt * 0.075;
         }
-        let tilt_target = if moving {
+        let tilt_target = if b.slope != 0 {
+            b.slope as f32 * 0.5
+        } else if moving {
             a.run_phase.sin() * 0.10 + b.vel.x / RUN_MAX * 0.05
         } else if !b.on_ground {
-            b.vel.x / RUN_MAX * 0.12
+            b.vel.x / RUN_MAX * if b.gliding { 0.06 } else { 0.12 }
         } else {
             0.0
         };
@@ -872,6 +1287,17 @@ impl Game {
         a.tilt += (tilt_target - a.tilt) * kt;
         let bob_target = if moving { a.run_phase.sin().abs() * 3.0 * (speed / RUN_MAX).max(0.6) } else { 0.0 };
         a.bob += (bob_target - a.bob) * kt;
+        let spin_target = if b.gliding {
+            if b.in_wind {
+                46.0
+            } else {
+                30.0
+            }
+        } else {
+            0.0
+        };
+        a.prop_speed = approach(a.prop_speed, spin_target, 120.0 * dt);
+        a.prop += a.prop_speed * dt;
     }
 
     /// Debug helper: place the player at a tile column (dropping onto whatever is below).
@@ -913,16 +1339,27 @@ mod tests {
     fn stands_still_safely() {
         let mut g = game(&["  P        ", "###########"]);
         run(&mut g, 2.0, idle);
-        assert!(g.alive && g.body.on_ground && g.deaths == 0);
+        assert!(g.alive && g.body.on_ground && g.deaths == 0 && g.hearts == MAX_HEARTS);
     }
 
     #[test]
-    fn falling_in_a_pit_kills_and_respawns() {
+    fn falling_in_a_pit_costs_a_heart() {
         let mut g = game(&["  P                 ", "#####     ##########"]);
-        run(&mut g, 1.6, walk_right);
+        run(&mut g, 1.0, walk_right);
+        assert_eq!(g.hearts, 2);
+        assert_eq!(g.deaths, 0);
+        assert!(g.alive);
+        assert!(g.body.pos.x < 5.0 * TILE, "put back before the pit");
+        assert!(g.invuln > 0.0);
+    }
+
+    #[test]
+    fn three_falls_lose_a_life() {
+        let mut g = game(&["  P                 ", "#####     ##########"]);
+        run(&mut g, 2.6, walk_right);
         assert_eq!(g.deaths, 1);
         run(&mut g, 2.0, idle);
-        assert!(g.alive, "respawned after the death animation");
+        assert!(g.alive && g.hearts == MAX_HEARTS, "respawned with full hearts");
         assert!((g.body.pos.x - (2.5 * TILE - PW / 2.0)).abs() < 1.0, "back at the start");
     }
 
@@ -936,14 +1373,35 @@ mod tests {
         }
         assert!(bounced, "player bounced off the jelly");
         assert!(g.enemies.iter().all(|e| e.kind != EKind::Jelly || e.dying > 0.0));
+        assert_eq!(g.hearts, MAX_HEARTS);
+    }
+
+    #[test]
+    fn hedgehogs_hurt_when_stomped() {
+        let mut g = game(&["       P    ", "            ", "            ", "       h    ", "############"]);
+        run(&mut g, 1.0, idle);
+        assert_eq!(g.hearts, MAX_HEARTS - 1);
         assert_eq!(g.deaths, 0);
     }
 
     #[test]
-    fn hedgehogs_cannot_be_stomped() {
-        let mut g = game(&["       P    ", "            ", "            ", "       h    ", "############"]);
+    fn thrown_orange_knocks_out_a_hedgehog() {
+        let mut g = game(&["  P       h      ", "#################"]);
+        g.oranges = 2;
+        run(&mut g, 0.3, idle);
+        g.update(&Input { throw_pressed: true, ..Default::default() }, DT);
+        assert_eq!(g.oranges, 1);
         run(&mut g, 1.0, idle);
-        assert_eq!(g.deaths, 1);
+        assert!(g.enemies.is_empty(), "hedgehog knocked out");
+        assert_eq!(g.hearts, MAX_HEARTS);
+    }
+
+    #[test]
+    fn throwing_without_oranges_does_nothing() {
+        let mut g = game(&["  P       ", "##########"]);
+        g.update(&Input { throw_pressed: true, ..Default::default() }, DT);
+        assert!(g.thrown.is_empty());
+        assert!(g.sfx.contains(&Sfx::NoAmmo));
     }
 
     #[test]
@@ -962,26 +1420,31 @@ mod tests {
         let mut g = game(&["  P   ", "      ", " CCC  ", "      "]);
         run(&mut g, 0.3, idle);
         assert!(g.body.on_ground);
+        run(&mut g, 0.4, idle);
+        assert!(g.body.on_ground, "still standing: blocks wait {CRUMBLE_DELAY}s");
         run(&mut g, 1.2, idle);
-        assert_eq!(g.deaths, 1, "fell after the blocks crumbled");
+        assert!(g.hearts < MAX_HEARTS, "fell after the blocks crumbled");
     }
 
     #[test]
     fn shield_absorbs_one_hit() {
         let mut g = game(&["  PS     ^^^       ", "###################"]);
         run(&mut g, 2.0, walk_right);
-        assert_eq!(g.deaths, 0, "shield saved us from the spikes");
+        assert_eq!(g.hearts, MAX_HEARTS, "shield saved us from the spikes");
         assert!(!g.shield);
         let mut g2 = game(&["  P      ^^^       ", "###################"]);
         run(&mut g2, 2.0, walk_right);
-        assert_eq!(g2.deaths, 1, "no shield -> spikes kill");
+        assert_eq!(g2.hearts, MAX_HEARTS - 1, "no shield -> spikes hurt");
+        assert_eq!(g2.deaths, 0);
     }
 
     #[test]
-    fn checkpoint_then_goal() {
+    fn checkpoint_heals_and_goal_clears() {
         let mut g = game(&["                        ", "                        ", "                        ", " P    K         G       ", "########################"]);
+        g.hearts = 1;
         run(&mut g, 1.0, walk_right);
         assert!(g.checkpoints[0].active);
+        assert_eq!(g.hearts, MAX_HEARTS);
         g.retry();
         assert!((g.body.center().x - 6.5 * TILE).abs() < 1.0, "respawn at checkpoint");
         run(&mut g, 4.0, walk_right);
@@ -989,9 +1452,76 @@ mod tests {
     }
 
     #[test]
-    fn turret_seeds_hurt_and_can_be_jumped() {
+    fn turret_seeds_hurt() {
         let mut g = game(&["  P        <", "############"]);
         run(&mut g, 4.0, idle);
-        assert!(g.deaths >= 1, "standing still in front of a turret is deadly");
+        assert!(g.hearts < MAX_HEARTS, "standing still in front of a turret hurts");
+    }
+
+    #[test]
+    fn spring_launches_high() {
+        let mut g = game(&["  P   ", "      ", "      ", "      ", "      ", "      ", "      ", "      ", "  T   ", "######"]);
+        let y0 = (g.lv.h - 2) as f32 * TILE;
+        let mut top = f32::MAX;
+        for _ in 0..90 {
+            g.update(&Input::default(), DT);
+            top = top.min(g.body.pos.y + PH);
+        }
+        assert!(y0 - top > 5.0 * TILE, "spring height {} tiles", (y0 - top) / TILE);
+    }
+
+    #[test]
+    fn cookie_box_pops_oranges() {
+        let mut g = game(&["        ", "   Q    ", "        ", "        ", "   P    ", "########"]);
+        assert_eq!(g.orange_total, 3);
+        run(&mut g, 0.2, idle);
+        run(&mut g, 0.5, |t| Input { jump_pressed: t < DT, jump_held: true, ..Default::default() });
+        let i = g.lv.idx(3, g.lv.h - 5).unwrap();
+        assert!(g.box_used[i], "box was bumped");
+        run(&mut g, 2.0, idle);
+        let popped: Vec<_> = g.items.iter().filter(|i| i.kind == ItemKind::Orange).collect();
+        assert_eq!(popped.len(), 3);
+        assert!(popped.iter().all(|i| !i.falling), "oranges settled");
+    }
+
+    #[test]
+    fn hidden_room_reveals() {
+        let mut g = game(&["           ", " P   %%  o ", "###########"]);
+        run(&mut g, 2.0, walk_right);
+        assert!(g.reveal[0] > 0.9);
+        assert_eq!(g.collected, 1, "walked through the fake wall to the orange");
+    }
+
+    #[test]
+    fn slides_push_you_downhill() {
+        let mut g = game(&[" P          ", "#\\          ", "##\\         ", "###\\        ", "####\\       ", "#####\\      ", "############"]);
+        let x0 = g.body.pos.x;
+        run(&mut g, 1.0, |_| Input { dir: -1.0, ..Default::default() });
+        assert!(g.body.pos.x > x0 + 3.0 * TILE, "slid {} px even while holding left", g.body.pos.x - x0);
+        assert!(g.alive && g.hearts == MAX_HEARTS);
+    }
+
+    #[test]
+    fn gliding_crosses_a_wide_gap() {
+        let mut g = game(&["  P                          ", "#####           #############"]);
+        // run, jump, release, press again and hold
+        run(&mut g, 3.0, |t| Input {
+            dir: 1.0,
+            run: true,
+            jump_pressed: (t > 0.3 && t < 0.3 + DT) || (t > 0.75 && t < 0.75 + DT),
+            jump_held: (t > 0.3 && t < 0.7) || t > 0.75,
+            ..Default::default()
+        });
+        assert_eq!(g.hearts, MAX_HEARTS, "glided over an 11-tile gap");
+        assert!(g.body.pos.x > 16.0 * TILE);
+    }
+
+    #[test]
+    fn fan_updraft_lifts_a_glider() {
+        let mut g = game(&["         ", "         ", "         ", "         ", "         ", "         ", "  P      ", " #UUU#   ", "#########"]);
+        let start_y = g.body.pos.y;
+        run(&mut g, 0.2, idle);
+        run(&mut g, 1.5, |t| Input { jump_pressed: t < DT || (t > 0.2 && t < 0.2 + DT), jump_held: t < 0.15 || t > 0.2, ..Default::default() });
+        assert!(g.body.pos.y < start_y - 4.0 * TILE, "rose {} tiles", (start_y - g.body.pos.y) / TILE);
     }
 }

@@ -190,54 +190,197 @@ fn make_sfx(s: Sfx) -> Synth {
             }
             y
         }
+        Sfx::Hurt => {
+            let mut y = Synth::new(0.3);
+            y.tone(0.0, 0.22, 620.0, 180.0, Square(0.5), 0.3, 0.002, 0.1, 0.03);
+            y.tone(0.0, 0.08, 4000.0, 1500.0, Noise, 0.18, 0.001, 0.06, 0.0);
+            y
+        }
+        Sfx::Heart => {
+            let mut y = Synth::new(0.5);
+            for (i, n) in [72, 76, 79, 84].iter().enumerate() {
+                let len = if i == 3 { 0.28 } else { 0.06 };
+                y.tone(i as f32 * 0.06, len, midi(*n), midi(*n), Tri, 0.4, 0.003, len * 0.6, 0.0);
+                y.tone(i as f32 * 0.06, len, midi(*n + 12), midi(*n + 12), Square(0.125), 0.06, 0.003, len * 0.6, 0.0);
+            }
+            y
+        }
+        Sfx::Spring => {
+            let mut y = Synth::new(0.42);
+            y.tone(0.0, 0.4, 170.0, 640.0, Sine, 0.5, 0.003, 0.2, 0.09);
+            y.tone(0.0, 0.18, 340.0, 900.0, Square(0.25), 0.1, 0.003, 0.1, 0.0);
+            y
+        }
+        Sfx::Glide => {
+            let mut y = Synth::new(0.36);
+            y.tone(0.0, 0.34, 2400.0, 700.0, Noise, 0.16, 0.06, 0.22, 0.0);
+            y.tone(0.0, 0.3, 500.0, 760.0, Tri, 0.14, 0.04, 0.2, 0.04);
+            y
+        }
+        Sfx::Throw => {
+            let mut y = Synth::new(0.12);
+            y.tone(0.0, 0.08, 380.0, 950.0, Square(0.25), 0.25, 0.002, 0.04, 0.0);
+            y.tone(0.0, 0.06, 6000.0, 2500.0, Noise, 0.1, 0.002, 0.05, 0.0);
+            y
+        }
+        Sfx::NoAmmo => {
+            let mut y = Synth::new(0.18);
+            y.tone(0.0, 0.05, 170.0, 160.0, Square(0.5), 0.2, 0.002, 0.02, 0.0);
+            y.tone(0.09, 0.06, 140.0, 130.0, Square(0.5), 0.2, 0.002, 0.03, 0.0);
+            y
+        }
+        Sfx::Pop => {
+            let mut y = Synth::new(0.2);
+            y.tone(0.0, 0.09, 950.0, 260.0, Sine, 0.5, 0.001, 0.05, 0.0);
+            y.tone(0.0, 0.04, 7000.0, 3000.0, Noise, 0.22, 0.001, 0.03, 0.0);
+            y.tone(0.05, 0.12, midi(88), midi(88), Tri, 0.2, 0.002, 0.1, 0.0);
+            y
+        }
+        Sfx::BoxHit => {
+            let mut y = Synth::new(0.36);
+            y.tone(0.0, 0.07, 320.0, 200.0, Tri, 0.4, 0.001, 0.05, 0.0);
+            y.tone(0.06, 0.06, midi(86), midi(86), Square(0.25), 0.15, 0.002, 0.03, 0.0);
+            y.tone(0.12, 0.2, midi(93), midi(93), Square(0.25), 0.15, 0.002, 0.15, 0.0);
+            y
+        }
+        Sfx::BoxEmpty => {
+            let mut y = Synth::new(0.1);
+            y.tone(0.0, 0.08, 150.0, 90.0, Tri, 0.45, 0.001, 0.06, 0.0);
+            y
+        }
+        Sfx::Secret => {
+            let mut y = Synth::new(1.0);
+            for (i, n) in [79, 83, 86, 91, 95, 98].iter().enumerate() {
+                let t = i as f32 * 0.07;
+                y.tone(t, 0.4, midi(*n), midi(*n), Tri, 0.22, 0.003, 0.35, 0.0);
+                y.tone(t + 0.21, 0.3, midi(*n), midi(*n), Tri, 0.07, 0.003, 0.25, 0.0);
+            }
+            y
+        }
     }
 }
 
-/// Original 8-bar loop (C - Am - F - G), 140 bpm.
-fn make_bgm() -> Synth {
+struct Song {
+    bpm: f32,
+    melody: [&'static [(i32, i32)]; 8],
+    roots: [[i32; 2]; 8],
+    minor: [bool; 8],
+    lead: Wave,
+    /// 0 = root/octave bounce, 1 = oom-pah (root/fifth), 2 = long soft notes
+    bass: u8,
+    arp: f32,
+}
+
+/// Three original 8-bar loops, one per level.
+const SONGS: [Song; 3] = [
+    // Orange Meadow: C - Am - F - G, bright and bouncy
+    Song {
+        bpm: 140.0,
+        melody: [
+            &[(76, 2), (79, 1), (81, 1), (79, 2), (76, 2)],
+            &[(72, 1), (74, 1), (76, 2), (74, 2), (72, 2)],
+            &[(69, 2), (72, 1), (77, 1), (76, 2), (72, 2)],
+            &[(74, 3), (71, 1), (67, 4)],
+            &[(79, 1), (76, 1), (79, 2), (84, 2), (83, 1), (81, 1)],
+            &[(81, 2), (79, 1), (76, 1), (72, 2), (76, 2)],
+            &[(77, 2), (81, 2), (79, 2), (74, 2)],
+            &[(72, 4), (0, 4)],
+        ],
+        roots: [[48, 48], [45, 45], [41, 41], [43, 43], [48, 48], [45, 45], [41, 43], [48, 48]],
+        minor: [false, true, false, false, false, true, false, false],
+        lead: Wave::Square(0.25),
+        bass: 0,
+        arp: 0.03,
+    },
+    // Cookie Factory: F - G - Em - Am - Dm - G - C, oom-pah machinery
+    Song {
+        bpm: 152.0,
+        melody: [
+            &[(72, 1), (74, 1), (77, 2), (76, 1), (74, 1), (72, 2)],
+            &[(71, 1), (72, 1), (74, 2), (79, 2), (74, 2)],
+            &[(76, 1), (79, 1), (76, 1), (72, 1), (71, 2), (67, 2)],
+            &[(69, 2), (72, 2), (76, 3), (0, 1)],
+            &[(77, 1), (76, 1), (74, 1), (72, 1), (74, 2), (77, 2)],
+            &[(79, 2), (77, 1), (76, 1), (74, 2), (71, 2)],
+            &[(72, 1), (76, 1), (79, 1), (84, 1), (83, 1), (79, 1), (76, 1), (74, 1)],
+            &[(72, 4), (0, 4)],
+        ],
+        roots: [[41, 41], [43, 43], [40, 40], [45, 45], [38, 38], [43, 43], [48, 48], [48, 48]],
+        minor: [false, false, true, true, true, false, false, false],
+        lead: Wave::Square(0.5),
+        bass: 1,
+        arp: 0.02,
+    },
+    // Sky World: Fmaj7 - Em7 - Dm7 - Cmaj7 - F - G - Am - G, floaty
+    Song {
+        bpm: 112.0,
+        melody: [
+            &[(81, 3), (79, 1), (77, 2), (76, 2)],
+            &[(79, 3), (76, 1), (74, 2), (72, 2)],
+            &[(74, 2), (77, 2), (81, 2), (79, 2)],
+            &[(76, 6), (0, 2)],
+            &[(77, 2), (81, 2), (84, 3), (83, 1)],
+            &[(83, 2), (79, 2), (74, 2), (79, 2)],
+            &[(81, 3), (84, 1), (83, 2), (81, 2)],
+            &[(79, 6), (0, 2)],
+        ],
+        roots: [[41, 41], [40, 40], [38, 38], [36, 36], [41, 41], [43, 43], [45, 45], [43, 43]],
+        minor: [false, true, true, false, false, false, true, false],
+        lead: Wave::Tri,
+        bass: 2,
+        arp: 0.06,
+    },
+];
+
+fn make_bgm(song: &Song) -> Synth {
     use Wave::*;
-    let e = 60.0 / 140.0 / 2.0; // one eighth note
+    let e = 60.0 / song.bpm / 2.0; // one eighth note
     let bars = 8;
     let mut y = Synth::new(e * 8.0 * bars as f32);
-    let melody: [&[(i32, i32)]; 8] = [
-        &[(76, 2), (79, 1), (81, 1), (79, 2), (76, 2)],
-        &[(72, 1), (74, 1), (76, 2), (74, 2), (72, 2)],
-        &[(69, 2), (72, 1), (77, 1), (76, 2), (72, 2)],
-        &[(74, 3), (71, 1), (67, 4)],
-        &[(79, 1), (76, 1), (79, 2), (84, 2), (83, 1), (81, 1)],
-        &[(81, 2), (79, 1), (76, 1), (72, 2), (76, 2)],
-        &[(77, 2), (81, 2), (79, 2), (74, 2)],
-        &[(72, 4), (0, 4)],
-    ];
-    let roots = [[48, 48], [45, 45], [41, 41], [43, 43], [48, 48], [45, 45], [41, 43], [48, 48]];
+    let soft = song.bass == 2;
     for bar in 0..bars {
         let t0 = bar as f32 * 8.0 * e;
         let mut pos = 0;
-        for &(n, len) in melody[bar] {
+        for &(n, len) in song.melody[bar] {
             if n > 0 {
                 let d = len as f32 * e * 0.92;
-                y.tone(t0 + pos as f32 * e, d, midi(n), midi(n), Square(0.25), 0.11, 0.004, 0.05, 0.003);
-                y.tone(t0 + pos as f32 * e, d, midi(n - 12), midi(n - 12), Square(0.5), 0.035, 0.004, 0.05, 0.0);
+                let vol = if soft { 0.2 } else { 0.11 };
+                y.tone(t0 + pos as f32 * e, d, midi(n), midi(n), song.lead, vol, 0.004, 0.05, 0.003);
+                let under = if soft { Sine } else { Square(0.5) };
+                y.tone(t0 + pos as f32 * e, d, midi(n - 12), midi(n - 12), under, 0.035, 0.004, 0.05, 0.0);
             }
             pos += len;
         }
         for k in 0..8 {
             let t = t0 + k as f32 * e;
-            let root = roots[bar][k / 4];
-            let n = if k % 2 == 0 { root } else { root + 12 };
-            y.note(t, e * 0.8, n - 12 + 12, Tri, 0.22);
-            if k % 2 == 1 {
-                y.tone(t, 0.03, 8000.0, 8000.0, Noise, 0.035, 0.001, 0.02, 0.0);
+            let root = song.roots[bar][k / 4];
+            match song.bass {
+                0 => y.note(t, e * 0.8, if k % 2 == 0 { root } else { root + 12 }, Tri, 0.22),
+                1 => y.note(t, e * 0.6, if k % 2 == 0 { root } else { root + 7 }, Tri, 0.24),
+                _ => {
+                    if k % 4 == 0 {
+                        y.tone(t, e * 3.8, midi(root), midi(root), Sine, 0.3, 0.02, e * 1.5, 0.0);
+                    }
+                }
             }
-            if k % 4 == 0 {
-                y.tone(t, 0.12, 150.0, 45.0, Sine, 0.32, 0.001, 0.08, 0.0);
+            if !soft {
+                if k % 2 == 1 {
+                    y.tone(t, 0.03, 8000.0, 8000.0, Noise, 0.035, 0.001, 0.02, 0.0);
+                }
+                if k % 4 == 0 {
+                    y.tone(t, 0.12, 150.0, 45.0, Sine, 0.32, 0.001, 0.08, 0.0);
+                }
+                if k % 4 == 2 {
+                    y.tone(t, 0.08, 2500.0, 1200.0, Noise, 0.08, 0.001, 0.06, 0.0);
+                }
+            } else if k % 8 == 4 {
+                y.tone(t, 0.05, 6000.0, 6000.0, Noise, 0.025, 0.001, 0.04, 0.0);
             }
-            if k % 4 == 2 {
-                y.tone(t, 0.08, 2500.0, 1200.0, Noise, 0.08, 0.001, 0.06, 0.0);
-            }
-            // gentle arpeggio sparkle
-            let chord = [root + 24, root + 28 - if roots[bar][0] == 45 { 1 } else { 0 }, root + 31];
-            y.note(t + e * 0.5, e * 0.4, chord[k % 3] + 12, Tri, 0.03);
+            // arpeggio sparkle
+            let third = if song.minor[bar] { 3 } else { 4 };
+            let chord = [root + 24, root + 24 + third, root + 31, root + 36];
+            let (a, len) = if soft { (chord[k % 4], e * 0.9) } else { (chord[k % 3] + 12, e * 0.4) };
+            y.note(t + e * 0.5, len, a, Tri, song.arp);
         }
     }
     y
@@ -245,26 +388,19 @@ fn make_bgm() -> Synth {
 
 pub struct Audio {
     sfx: HashMap<Sfx, Sound>,
-    bgm: Option<Sound>,
-    bgm_on: bool,
+    bgm: Vec<Option<Sound>>,
+    playing: Option<usize>,
     pub muted: bool,
 }
 
+const BGM_VOLUME: f32 = 0.4;
+
 impl Audio {
     pub async fn load() -> Audio {
+        use Sfx::*;
         let all = [
-            Sfx::Jump,
-            Sfx::Land,
-            Sfx::Stomp,
-            Sfx::Coin,
-            Sfx::Golden,
-            Sfx::Shield,
-            Sfx::ShieldPop,
-            Sfx::Die,
-            Sfx::Checkpoint,
-            Sfx::Crumble,
-            Sfx::Shoot,
-            Sfx::Win,
+            Jump, Land, Stomp, Coin, Golden, Shield, ShieldPop, Die, Checkpoint, Crumble, Shoot, Win, Hurt, Heart, Spring, Glide, Throw, NoAmmo,
+            Pop, BoxHit, BoxEmpty, Secret,
         ];
         let mut sfx = HashMap::new();
         for s in all {
@@ -272,8 +408,11 @@ impl Audio {
                 sfx.insert(s, snd);
             }
         }
-        let bgm = load_sound_from_bytes(&make_bgm().wav()).await.ok();
-        Audio { sfx, bgm, bgm_on: false, muted: false }
+        let mut bgm = vec![];
+        for song in &SONGS {
+            bgm.push(load_sound_from_bytes(&make_bgm(song).wav()).await.ok());
+        }
+        Audio { sfx, bgm, playing: None, muted: false }
     }
 
     pub fn play(&self, s: Sfx) {
@@ -282,9 +421,11 @@ impl Audio {
         }
         let volume = match s {
             Sfx::Land => 0.25,
-            Sfx::Shoot => 0.35,
+            Sfx::Shoot => 0.3,
             Sfx::Crumble => 0.5,
             Sfx::Coin => 0.45,
+            Sfx::Glide => 0.45,
+            Sfx::Throw => 0.4,
             _ => 0.6,
         };
         if let Some(snd) = self.sfx.get(&s) {
@@ -292,26 +433,28 @@ impl Audio {
         }
     }
 
-    pub fn start_bgm(&mut self) {
-        if let Some(b) = &self.bgm {
-            stop_sound(b);
-            play_sound(b, PlaySoundParams { looped: true, volume: if self.muted { 0.0 } else { 0.4 } });
-            self.bgm_on = true;
+    /// Start the loop for level `i` (0-based) from the beginning.
+    pub fn start_bgm(&mut self, i: usize) {
+        self.stop_bgm();
+        if let Some(Some(b)) = self.bgm.get(i) {
+            play_sound(b, PlaySoundParams { looped: true, volume: if self.muted { 0.0 } else { BGM_VOLUME } });
+            self.playing = Some(i);
         }
     }
 
     pub fn stop_bgm(&mut self) {
-        if let Some(b) = &self.bgm {
-            stop_sound(b);
+        if let Some(i) = self.playing.take() {
+            if let Some(Some(b)) = self.bgm.get(i) {
+                stop_sound(b);
+            }
         }
-        self.bgm_on = false;
     }
 
     pub fn toggle_mute(&mut self) {
         self.muted = !self.muted;
-        if let Some(b) = &self.bgm {
-            if self.bgm_on {
-                set_sound_volume(b, if self.muted { 0.0 } else { 0.4 });
+        if let Some(i) = self.playing {
+            if let Some(Some(b)) = self.bgm.get(i) {
+                set_sound_volume(b, if self.muted { 0.0 } else { BGM_VOLUME });
             }
         }
     }

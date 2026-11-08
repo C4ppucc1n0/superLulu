@@ -1,95 +1,84 @@
-; SUPER LULU - level 1
-; Each '---' block is a slice of the level; blocks are joined left-to-right and
-; bottom-aligned, so a block may have fewer rows than the level height (20).
-; Lines starting with ';' are comments.
-; #  ground          X  stone block      =  jump-through platform   C  crumbling block
-; ^  floor spikes    v  ceiling spikes   o  orange (coin)           *  golden orange (3)
+; SUPER LULU - Orange Meadow
+; Each '---' block is a slice of the level; blocks are joined left-to-right and bottom-aligned.
+; Lines starting with ';' are comments, lines starting with '@' are settings:
+;   @name <text>   @theme meadow|factory|sky   @wind <updraft height in tiles>   @signN <text, '|' = new line>
+; #  ground          X  stone block      =  jump-through platform   C  crumbling cookie
+; ^  floor spikes    o  orange           *  golden orange (3)       +  heart
 ; S  shield bubble   P  player start     K  checkpoint              G  goal gate (bottom-left)
-; e  jelly (stomp)   h  hedgehog (spiky, do NOT stomp)              f  frog (hops at you)
+; e  jelly (stomp)   h  hedgehog (spiky: throw oranges or avoid)    f  frog (hops at you)
 ; <  turret firing left   >  turret firing right
 ; H  horizontal moving platform (run of H = one platform)   V  vertical moving platform
 ; |  invisible bumper: turns moving platforms and walking enemies around
---- segment 1 Orange Meadow (columns 0-69)
-                                                                      
-                                                                      
-                                                                      
-                                                                      
-                                                                      
-                                                                      
-                                                                      
-                                                                      
-                                                                      
-                                                                      
-                                               *                      
-                                                                 oooo 
-                             oooo                                     
-                  ooo               ooooS     o o             ###     
-      ooo         XXX               =====      X             ####     
-            ooo          ####                  X            #####     
-   P                  e  ####            f     X     e   e ######     
-############   ##############    ############  X  ###############    #
-############   ##############    ############^^X^^###############    #
-############   ##############    ################################    #
---- segment 2 Machinery (columns 70-139)
-                                                                      
-                                                                      
-                                                                      
-                                                                      
-                                                                      
-                                                                      
-                                                                      
-                                                                      
-                                                               oo     
-            vvvv                                      vvvvvvv  ||     
-                                                                  ####
-                                                                  ####
-             oo                                                   ####
-             ==                                 ooo  |HHH    |    ####
-         oo      oo                                               ####
-         ==      ==        ooo     ooo     | HHH     |            ####
-                                e                              VV ####
-#######              #####CCCC CCC CCC#####                  #########
-#######^^^^^^^^^^^^^^#####            #####                  #########
-##########################            #####                  #########
---- segment 3 Critter Gauntlet (columns 140-211)
-                                                                        
-                                                                        
-                                                                        
-                                                                        
-                                                                        
-                                                                        
-                                                                        
-                                                                        
-                                                                        
-K S                                                                     
-####                       o                                            
-####               o   o                                      *         
-####           o           ##                  ###            X         
-####               ##  f   ##                  <##  ooooo               
-#### ooo       ##  ##  ##  ##              ==  ###  =====   ooooo       
-####           ##  ##  ##  ##     ooooooo      ###                      
-####      h    ##  ##  ##  ##       e          <##   h   h           f  
-#############  ##  ##  ##  ##  #############################     #######
-#############  ##  ##  ##  ##  #############################     #######
-#############  ##  ##  ##  ##  #############################     #######
---- segment 4 The Climb & the Sky Road (columns 212-289)
-                                                                              
-                          vvvvvvvvv                                           
-                                                                              
-X                                                                             
-X*   o  XXXXXXX            o  o  o                                            
-X    CC  vvX               C  C  C                                            
-X o        <   |HH       |                                                    
-X===       X                      |HH    |  h                                 
-X     o    X                              XXXXX                               
-X     CC   X                              XXXXX                               
-X          <                              XXXXX                               
-X  o       X                              XXXXX                               
-X ===      X                              XXXXX    ooooo                      
-X       o  <                              XXXXX      e    oooooo              
-X      === X                              XXXXX   =======                     
-           X                              XXXXX                               
-    S      X                              XXXXX    ^^^^^    f   h  ^^  G      
-############                              XXXXX###############################
-############                              XXXXX###############################
-############                              XXXXX###############################
+; T  jelly spring    U  fan (updraft above it)   Q  cookie box (3 oranges)   R  cookie box (heart)
+; %  fake ground (secret room: looks solid, you can walk through it)   \ /  slides (\ goes down to the right, / down to the left)
+; 1-9  signpost (text from @signN)
+@name Orange Meadow
+@theme meadow
+@wind 8
+@sign1 Hold jump to jump higher.|Hold X to run.
+@sign2 Bump cookie boxes from below!|A hole only costs one heart.
+@sign3 Press C to throw an orange.|It knocks out any critter,|even a spiky hedgehog!
+@sign4 Jump, then press jump AGAIN|and HOLD it to glide!
+--- columns 0-59
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                               oooo         
+                                         *           oooo   
+                             ooo        ===   ######\       
+            Q            oooo                 #######\      
+       ooo     oo                             ########\     
+                         ####                 #########\    
+   P 1    2          e   ####     3|  h  |    ##########\   
+###############  ############   ############T###############
+###############  ############   ############################
+###############  ############   ############################
+--- columns 60-119
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                                                            
+                   ooo         oooooooo                     
+                  o   o                             oooooo  
+ oo              o     o  ooo ##########                    
+o  o                    o     %%%%%%%%##                    
+                          === %%%%%%%%##          |HHH     |
+      K  4                  oo%ooooo*%##    f               
+    #############        ##########################        #
+    #############        ##########################        #
+    #############        ##########################        #
+--- columns 120-177
+                                                          
+                                                          
+                                                          
+                                                          
+                                                          
+                                                          
+                                                          
+                                                          
+                                                          
+                                                          
+                             ooooo  o o                   
+                                        o   *             
+                            =======       XXXX            
+     R                                                    
+                                                          
+             oooooooo                                     
+ K       e             | e  |         ooo        G        
+############CCCCCCCCCC#########T##########################
+############          ####################################
+############          ####################################
